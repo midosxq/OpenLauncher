@@ -1,0 +1,616 @@
+name: Build OpenLauncher
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build.yml'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cek assets/source.zip
+        run: |
+          if [ ! -f assets/source.zip ]; then
+            echo "ERROR: assets/source.zip tidak ada di repo. Upload ke folder assets lalu jalankan ulang."
+            exit 1
+          fi
+          ls -la assets/
+      - name: Tulis source project
+        run: |
+          set -e
+          mkdir -p proj
+          cd proj
+          mkdir -p "$(dirname 'settings.gradle')"
+          cat > 'settings.gradle' <<'OLEOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "OpenLauncher"
+          include ':app'
+          OLEOF
+          mkdir -p "$(dirname 'build.gradle')"
+          cat > 'build.gradle' <<'OLEOF'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+              id 'org.jetbrains.kotlin.android' version '1.9.24' apply false
+          }
+          OLEOF
+          mkdir -p "$(dirname 'gradle.properties')"
+          cat > 'gradle.properties' <<'OLEOF'
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+          android.nonTransitiveRClass=true
+          OLEOF
+          mkdir -p "$(dirname 'app/build.gradle')"
+          cat > 'app/build.gradle' <<'OLEOF'
+          plugins {
+              id 'com.android.application'
+              id 'org.jetbrains.kotlin.android'
+          }
+
+          android {
+              namespace 'com.midosxq.oplx'
+              compileSdk 34
+              defaultConfig {
+                  applicationId 'com.midosxq.oplx'
+                  minSdk 30
+                  targetSdk 34
+                  versionCode 1
+                  versionName '0.1.0-fase1'
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = '17'
+              }
+              lint {
+                  abortOnError false
+                  checkReleaseBuilds false
+              }
+          }
+          OLEOF
+          mkdir -p "$(dirname 'app/src/main/AndroidManifest.xml')"
+          cat > 'app/src/main/AndroidManifest.xml' <<'OLEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application
+                  android:label="OpenLauncher"
+                  android:icon="@mipmap/ic_launcher"
+                  android:allowBackup="false"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="sensorLandscape"
+                      android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          OLEOF
+          mkdir -p "$(dirname 'app/src/main/res/values/colors.xml')"
+          cat > 'app/src/main/res/values/colors.xml' <<'OLEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ic_bg">#12081F</color>
+          </resources>
+          OLEOF
+          mkdir -p "$(dirname 'app/src/main/res/mipmap-anydpi/ic_launcher.xml')"
+          cat > 'app/src/main/res/mipmap-anydpi/ic_launcher.xml' <<'OLEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_bg" />
+              <foreground android:drawable="@drawable/ic_fg" />
+          </adaptive-icon>
+          OLEOF
+          mkdir -p "$(dirname 'app/src/main/java/com/midosxq/oplx/Pal.kt')"
+          cat > 'app/src/main/java/com/midosxq/oplx/Pal.kt' <<'OLEOF'
+          package com.midosxq.oplx
+
+          import android.graphics.drawable.GradientDrawable
+
+          object Pal {
+              val BG = 0xFF0A0A0F.toInt()
+              val PANEL = 0xFF12101C.toInt()
+              val CARD = 0xFF1A1727.toInt()
+              val STROKE = 0xFF2E2547.toInt()
+              val PURPLE = 0xFF8B5CF6.toInt()
+              val PURPLE_LIGHT = 0xFFC4B5FD.toInt()
+              val PURPLE_DIM = 0x338B5CF6
+              val HOVER = 0x228B5CF6
+              val TEXT = 0xFFEEEAFB.toInt()
+              val MUTED = 0xFF8F88AD.toInt()
+              val GREEN = 0xFF34D399.toInt()
+              val AMBER = 0xFFFBBF24.toInt()
+              val RED = 0xFFF87171.toInt()
+              val GREY = 0xFF9CA3AF.toInt()
+          }
+
+          fun rounded(color: Int, radiusDp: Float, density: Float, strokeColor: Int = 0, strokeDp: Float = 0f): GradientDrawable {
+              val g = GradientDrawable()
+              g.setColor(color)
+              g.cornerRadius = radiusDp * density
+              if (strokeDp > 0f) {
+                  g.setStroke(maxOf(1, (strokeDp * density).toInt()), strokeColor)
+              }
+              return g
+          }
+          OLEOF
+          mkdir -p "$(dirname 'app/src/main/java/com/midosxq/oplx/Model.kt')"
+          cat > 'app/src/main/java/com/midosxq/oplx/Model.kt' <<'OLEOF'
+          package com.midosxq.oplx
+
+          /** Status service mapper yang ditampilkan di sidebar. */
+          enum class Svc(val label: String, val color: Int) {
+              RUNNING("RUNNING", Pal.GREEN),
+              STOPPED("STOPPED", Pal.AMBER),
+              ERROR("ERROR", Pal.RED),
+              NOT_ACTIVATED("NOT ACTIVATED", Pal.GREY)
+          }
+
+          /**
+           * Fase 1: belum ada Mapper Service dan belum ada metode aktivasi,
+           * jadi status yang jujur hanya NOT ACTIVATED. Fase 3 yang akan mengubah ini
+           * berdasarkan keadaan service yang sebenarnya.
+           */
+          object StatusModel {
+              var svc: Svc = Svc.NOT_ACTIVATED
+              var method: String = "Not Activated"
+          }
+
+          class Page(val id: String, val title: String, val phase: String, val planned: List<String>)
+
+          object Pages {
+              val all = listOf(
+                  Page(
+                      "library", "Game Library", "FASE 2",
+                      listOf(
+                          "Deteksi game terpasang (sesuai batas visibilitas paket Android)",
+                          "Add Manually untuk game yang tidak terdeteksi",
+                          "Kartu cover 16:9 dari assets/source.zip dan panel detail ala Steam",
+                          "Launch Type per game: Launch Only atau Launch with Mapper Services"
+                      )
+                  ),
+                  Page(
+                      "config", "Game Configuration", "FASE 4-6",
+                      listOf(
+                          "Editor mapper: Touch, Joystick, keyboard, tombol mouse, gamepad",
+                          "Mouse Settings per game: Sensitivity X/Y, Cursor Lock, Cursor Refresh, Crazy Tap, aksi scroll",
+                          "Smart Auto Text Input (diuji per game)",
+                          "Export/Import keymap .xpp dengan backup dan konfirmasi"
+                      )
+                  ),
+                  Page(
+                      "devices", "Devices", "FASE 3",
+                      listOf(
+                          "Daftar keyboard, mouse, dan gamepad (USB, Bluetooth, hub) yang terlihat oleh Android",
+                          "Nama, tipe, status koneksi, dan kemampuan input"
+                      )
+                  ),
+                  Page(
+                      "highlights", "Highlights", "FASE 7",
+                      listOf(
+                          "Rekam gameplay dengan izin pengguna (MediaProjection)",
+                          "Simpan klip secara lokal, lihat dan kelola"
+                      )
+                  ),
+                  Page(
+                      "settings", "Settings", "FASE 6-7",
+                      listOf(
+                          "Custom Cursor: impor dari galeri atau file manager, dan reset ke default",
+                          "Preferensi tampilan umum"
+                      )
+                  ),
+                  Page(
+                      "activation", "Activation", "FASE 3",
+                      listOf(
+                          "Deteksi metode: root (MagiskSU, KernelSU, KernelSU Next, APatch), Shizuku, ADB Activator",
+                          "Alur aktivasi dan aktivasi ulang yang jelas",
+                          "Status service yang nyata, bukan sekadar izin"
+                      )
+                  )
+              )
+          }
+          OLEOF
+          mkdir -p "$(dirname 'app/src/main/java/com/midosxq/oplx/MainActivity.kt')"
+          cat > 'app/src/main/java/com/midosxq/oplx/MainActivity.kt' <<'OLEOF'
+          package com.midosxq.oplx
+
+          import android.app.Activity
+          import android.graphics.Typeface
+          import android.graphics.drawable.ColorDrawable
+          import android.graphics.drawable.StateListDrawable
+          import android.os.Build
+          import android.os.Bundle
+          import android.view.Gravity
+          import android.view.View
+          import android.view.WindowInsets
+          import android.view.WindowInsetsController
+          import android.view.WindowManager
+          import android.widget.FrameLayout
+          import android.widget.ImageView
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+
+          class MainActivity : Activity() {
+              private lateinit var content: FrameLayout
+              private lateinit var statusText: TextView
+              private lateinit var methodText: TextView
+              private val navItems = LinkedHashMap<String, TextView>()
+              private var current = "library"
+
+              private val dens: Float get() = resources.displayMetrics.density
+
+              private fun dp(v: Int): Int = (v * dens).toInt()
+
+              private fun tv(t: String, sp: Float, color: Int, bold: Boolean = false): TextView {
+                  val v = TextView(this)
+                  v.text = t
+                  v.textSize = sp
+                  v.setTextColor(color)
+                  if (bold) v.typeface = Typeface.DEFAULT_BOLD
+                  return v
+              }
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  window.setDecorFitsSystemWindows(false)
+                  val wlp = window.attributes
+                  wlp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                  window.attributes = wlp
+                  window.setBackgroundDrawable(ColorDrawable(Pal.BG))
+
+                  val root = LinearLayout(this)
+                  root.orientation = LinearLayout.HORIZONTAL
+                  root.setBackgroundColor(Pal.BG)
+                  root.addView(buildSidebar(), LinearLayout.LayoutParams(dp(250), LinearLayout.LayoutParams.MATCH_PARENT))
+                  content = FrameLayout(this)
+                  root.addView(content, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+                  root.setOnApplyWindowInsetsListener { v, ins ->
+                      val i = ins.getInsets(WindowInsets.Type.displayCutout() or WindowInsets.Type.systemBars())
+                      v.setPadding(i.left, i.top, i.right, i.bottom)
+                      ins
+                  }
+                  setContentView(root)
+                  refreshStatus()
+                  show(current)
+              }
+
+              override fun onWindowFocusChanged(hasFocus: Boolean) {
+                  super.onWindowFocusChanged(hasFocus)
+                  if (hasFocus) {
+                      val c = window.insetsController
+                      if (c != null) {
+                          c.hide(WindowInsets.Type.systemBars())
+                          c.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                      }
+                  }
+              }
+
+              private fun refreshStatus() {
+                  statusText.text = StatusModel.svc.label
+                  statusText.setTextColor(StatusModel.svc.color)
+                  methodText.text = StatusModel.method
+              }
+
+              private fun buildSidebar(): View {
+                  val col = LinearLayout(this)
+                  col.orientation = LinearLayout.VERTICAL
+                  col.setBackgroundColor(Pal.PANEL)
+                  col.setPadding(dp(16), dp(18), dp(16), dp(16))
+
+                  // Logo + nama
+                  val head = LinearLayout(this)
+                  head.orientation = LinearLayout.HORIZONTAL
+                  head.gravity = Gravity.CENTER_VERTICAL
+                  val logo = ImageView(this)
+                  logo.setImageResource(R.drawable.ui_logo)
+                  logo.scaleType = ImageView.ScaleType.FIT_CENTER
+                  head.addView(logo, LinearLayout.LayoutParams(dp(40), dp(40)))
+                  val name = tv("OpenLauncher", 19f, Pal.TEXT, true)
+                  val nlp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                  nlp.leftMargin = dp(10)
+                  head.addView(name, nlp)
+                  col.addView(head)
+
+                  // System Status (tepat di bawah logo, di atas navigasi)
+                  val box = LinearLayout(this)
+                  box.orientation = LinearLayout.VERTICAL
+                  box.background = rounded(Pal.CARD, 10f, dens, Pal.STROKE, 1f)
+                  box.setPadding(dp(12), dp(10), dp(12), dp(10))
+                  val row = LinearLayout(this)
+                  row.orientation = LinearLayout.HORIZONTAL
+                  val lbl = tv("SYSTEM STATUS", 10f, Pal.MUTED, true)
+                  lbl.letterSpacing = 0.08f
+                  row.addView(lbl, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                  statusText = tv("", 11f, Pal.GREY, true)
+                  row.addView(statusText)
+                  box.addView(row)
+                  val ml = tv("Running Method", 11f, Pal.MUTED)
+                  val mllp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                  mllp.topMargin = dp(8)
+                  box.addView(ml, mllp)
+                  methodText = tv("", 13f, Pal.TEXT)
+                  box.addView(methodText)
+                  val blp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                  blp.topMargin = dp(16)
+                  blp.bottomMargin = dp(14)
+                  col.addView(box, blp)
+
+                  // Navigasi (tanpa Home). Activation tampil selama aktivasi belum selesai.
+                  val activated = getSharedPreferences("ol", MODE_PRIVATE).getBoolean("activated", false)
+                  for (p in Pages.all) {
+                      if (p.id == "activation" && activated) continue
+                      val item = navItem(p)
+                      navItems[p.id] = item
+                      col.addView(item)
+                  }
+                  return col
+              }
+
+              private fun navItem(p: Page): TextView {
+                  val t = tv(p.title, 15f, Pal.MUTED)
+                  t.setPadding(dp(14), dp(11), dp(14), dp(11))
+                  t.isFocusable = true
+                  t.isClickable = true
+                  val sld = StateListDrawable()
+                  sld.addState(intArrayOf(android.R.attr.state_selected), rounded(Pal.PURPLE_DIM, 8f, dens))
+                  sld.addState(intArrayOf(android.R.attr.state_hovered), rounded(Pal.HOVER, 8f, dens))
+                  sld.addState(intArrayOf(android.R.attr.state_focused), rounded(Pal.HOVER, 8f, dens))
+                  sld.addState(intArrayOf(), ColorDrawable(0))
+                  t.background = sld
+                  t.setOnClickListener { show(p.id) }
+                  val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                  lp.topMargin = dp(4)
+                  t.layoutParams = lp
+                  return t
+              }
+
+              private fun show(id: String) {
+                  current = id
+                  for ((k, v) in navItems) {
+                      val sel = k == id
+                      v.isSelected = sel
+                      v.setTextColor(if (sel) Pal.TEXT else Pal.MUTED)
+                      v.typeface = if (sel) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                  }
+                  val page = Pages.all.first { it.id == id }
+                  content.removeAllViews()
+                  content.addView(buildPage(page))
+              }
+
+              private fun card(): LinearLayout {
+                  val c = LinearLayout(this)
+                  c.orientation = LinearLayout.VERTICAL
+                  c.background = rounded(Pal.CARD, 12f, dens, Pal.STROKE, 1f)
+                  c.setPadding(dp(20), dp(16), dp(20), dp(16))
+                  return c
+              }
+
+              private fun lp(top: Int): LinearLayout.LayoutParams {
+                  val l = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                  l.topMargin = dp(top)
+                  return l
+              }
+
+              private fun buildPage(p: Page): View {
+                  val sv = ScrollView(this)
+                  sv.isFillViewport = true
+                  val col = LinearLayout(this)
+                  col.orientation = LinearLayout.VERTICAL
+                  col.setPadding(dp(36), dp(28), dp(36), dp(28))
+                  col.addView(tv(p.title, 28f, Pal.TEXT, true))
+
+                  val chip = tv(p.phase, 11f, Pal.PURPLE_LIGHT, true)
+                  chip.setPadding(dp(10), dp(4), dp(10), dp(4))
+                  chip.background = rounded(Pal.PURPLE_DIM, 12f, dens)
+                  val clp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                  clp.topMargin = dp(8)
+                  col.addView(chip, clp)
+
+                  val plan = card()
+                  plan.addView(tv("Belum diimplementasi", 15f, Pal.AMBER, true))
+                  val sub = tv("Direncanakan sesuai spesifikasi:", 12f, Pal.MUTED)
+                  val slp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                  slp.topMargin = dp(6)
+                  plan.addView(sub, slp)
+                  for (item in p.planned) {
+                      val b = tv("\u2022  " + item, 14f, Pal.TEXT)
+                      val blp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                      blp.topMargin = dp(8)
+                      plan.addView(b, blp)
+                  }
+                  col.addView(plan, lp(20))
+
+                  if (p.id == "settings") {
+                      col.addView(aboutCard(), lp(16))
+                  }
+                  sv.addView(col)
+                  return sv
+              }
+
+              private fun aboutCard(): View {
+                  val vn = try {
+                      packageManager.getPackageInfo(packageName, 0).versionName
+                  } catch (e: Exception) {
+                      "?"
+                  }
+                  val c = card()
+                  c.addView(tv("Tentang build ini", 15f, Pal.PURPLE_LIGHT, true))
+                  val lines = listOf(
+                      "Versi: " + vn + " (Fase 1: fondasi)",
+                      "Package: " + packageName,
+                      "Android: " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")",
+                      "Sudah ada: kerangka UI, tema hitam-ungu, sidebar, blok System Status, logo",
+                      "System Status selalu NOT ACTIVATED sampai Mapper Service dibuat (Fase 3-4)",
+                      "Belum ada: Fase 2 sampai 7. Belum diuji di HP."
+                  )
+                  for (l in lines) {
+                      val t = tv(l, 13f, Pal.TEXT)
+                      val llp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                      llp.topMargin = dp(8)
+                      c.addView(t, llp)
+                  }
+                  return c
+              }
+          }
+          OLEOF
+          mkdir -p "$(dirname 'tools/prep_assets.py')"
+          cat > 'tools/prep_assets.py' <<'OLEOF'
+          import io
+          import os
+          import sys
+          import zipfile
+          from PIL import Image, ImageDraw, ImageFilter
+
+          EXPECTED_COVERS = [
+              "bloodstrike.png", "callofduty.png", "com.rockstar.gta3.png",
+              "com.rockstargames.gtasa.png", "com.rockstargames.gtavc.png",
+              "deltaforce.png", "ff.png", "ffmax.png", "minecraft.png", "mlbb.png",
+          ]
+          MAX_ENTRY_BYTES = 64 * 1024 * 1024
+          MAX_PIXELS = 4096 * 4096
+
+
+          def fail(msg):
+              print("ERROR: " + msg)
+              sys.exit(1)
+
+
+          def cutout(im):
+              """Hapus latar putih yang tersambung ke tepi gambar (aset asli tidak diubah)."""
+              im = im.convert("RGBA")
+              w, h = im.size
+              for seed in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]:
+                  p = im.getpixel(seed)
+                  if p[0] > 200 and p[1] > 200 and p[2] > 200:
+                      ImageDraw.floodfill(im, seed, (255, 255, 255, 0), thresh=60)
+              alpha = im.getchannel("A").filter(ImageFilter.MinFilter(3))
+              im.putalpha(alpha)
+              px = im.load()
+              a = im.getchannel("A").load()
+              for y in range(1, h - 1):
+                  for x in range(1, w - 1):
+                      if a[x, y] == 0:
+                          continue
+                      near_clear = (a[x - 1, y] == 0 or a[x + 1, y] == 0 or a[x, y - 1] == 0 or a[x, y + 1] == 0)
+                      r, g, b, _ = px[x, y]
+                      if near_clear and r > 215 and g > 215 and b > 215:
+                          px[x, y] = (r, g, b, 0)
+              bbox = im.getchannel("A").getbbox()
+              if not bbox:
+                  fail("logo menjadi kosong setelah latar dihapus")
+              im = im.crop(bbox)
+              side = max(im.size)
+              sq = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+              sq.paste(im, ((side - im.width) // 2, (side - im.height) // 2))
+              return sq
+
+
+          def main():
+              if len(sys.argv) != 3:
+                  fail("pemakaian: prep_assets.py <source.zip> <res-dir>")
+              zpath, res = sys.argv[1], sys.argv[2]
+              if not os.path.isfile(zpath):
+                  fail("assets/source.zip tidak ditemukan di repo. Upload source.zip ke folder 'assets' di GitHub, lalu jalankan build lagi.")
+              try:
+                  z = zipfile.ZipFile(zpath)
+              except zipfile.BadZipFile:
+                  fail("assets/source.zip rusak atau bukan file ZIP.")
+
+              names = []
+              print("== Isi assets/source.zip ==")
+              for i in z.infolist():
+                  n = i.filename.replace("\\", "/")
+                  if n.startswith("/") or ".." in n.split("/"):
+                      fail("entri ZIP tidak aman (path traversal): " + i.filename)
+                  if i.file_size > MAX_ENTRY_BYTES:
+                      fail("entri ZIP terlalu besar: " + i.filename)
+                  if not i.is_dir():
+                      names.append(n)
+                      print("  %10d  %s" % (i.file_size, n))
+
+              logos = [n for n in names if n.startswith("applogo/")]
+              cursors = [n for n in names if n.startswith("cursor/")]
+              covers = [n for n in names if n.startswith("gamecover/")]
+              if len(logos) != 1:
+                  fail("folder applogo/ harus berisi tepat 1 gambar, ditemukan: %s" % logos)
+
+              print("== Pemeriksaan aset ==")
+              if len(cursors) != 1:
+                  print("PERINGATAN: folder cursor/ berisi %d file (diharapkan 1): %s" % (len(cursors), cursors))
+              else:
+                  head = z.read(cursors[0])[:4]
+                  if head == b"\x00\x00\x02\x00":
+                      print("INFO: %s sebenarnya file kursor Windows (.cur) berekstensi .png; perlu decoder khusus (Fase 6)." % cursors[0])
+                  elif head[:4] == b"\x89PNG":
+                      print("INFO: %s adalah PNG biasa." % cursors[0])
+                  else:
+                      print("PERINGATAN: format %s tidak dikenal (header %s)" % (cursors[0], head.hex()))
+              have = set(os.path.basename(c) for c in covers)
+              for c in EXPECTED_COVERS:
+                  print("  cover %-30s %s" % (c, "ADA" if c in have else "TIDAK ADA"))
+              for c in sorted(have - set(EXPECTED_COVERS)):
+                  print("  cover tidak terduga: " + c)
+
+              data = z.read(logos[0])
+              try:
+                  im = Image.open(io.BytesIO(data))
+                  im.load()
+              except Exception as e:
+                  fail("logo tidak bisa dibaca sebagai gambar: %s" % e)
+              if im.format not in ("JPEG", "PNG"):
+                  fail("format logo tidak didukung: %s" % im.format)
+              if im.width * im.height > MAX_PIXELS:
+                  fail("resolusi logo terlalu besar")
+              print("Logo: %s %dx%d mode=%s" % (im.format, im.width, im.height, im.mode))
+
+              logo = cutout(im)
+              out = os.path.join(res, "drawable-nodpi")
+              os.makedirs(out, exist_ok=True)
+              logo.resize((256, 256), Image.LANCZOS).save(os.path.join(out, "ui_logo.png"))
+              fg = Image.new("RGBA", (432, 432), (0, 0, 0, 0))
+              inner = logo.resize((280, 280), Image.LANCZOS)
+              fg.paste(inner, ((432 - 280) // 2, (432 - 280) // 2), inner)
+              fg.save(os.path.join(out, "ic_fg.png"))
+              print("OK: ui_logo.png dan ic_fg.png dibuat dari applogo/ (aset asli tidak diubah).")
+
+
+          main()
+          OLEOF
+      - name: Siapkan aset dari assets/source.zip
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-pil
+          python3 proj/tools/prep_assets.py assets/source.zip proj/app/src/main/res
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Build APK (debug)
+        working-directory: proj
+        run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpenLauncher-apk
+          path: proj/app/build/outputs/apk/debug/app-debug.apk
