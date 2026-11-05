@@ -1,0 +1,2025 @@
+name: Build OpenLauncher
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build.yml'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cek assets/source.zip
+        run: |
+          if [ ! -f assets/source.zip ]; then
+            echo "ERROR: assets/source.zip tidak ada di repo. Upload ke folder assets lalu jalankan ulang."
+            exit 1
+          fi
+          ls -la assets/
+      - name: Tulis source project
+        run: |
+          set -e
+          mkdir -p proj
+          cd proj
+          mkdir -p "$(dirname 'settings.gradle')"
+          cat > 'settings.gradle' <<'OLEOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "OpenLauncher"
+          include ':app'
+          OLEOF
+          mkdir -p "$(dirname 'build.gradle')"
+          cat > 'build.gradle' <<'OLEOF'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+              id 'org.jetbrains.kotlin.android' version '1.9.24' apply false
+          }
+          OLEOF
+          mkdir -p "$(dirname 'gradle.properties')"
+          cat > 'gradle.properties' <<'OLEOF'
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+          android.nonTransitiveRClass=true
+          OLEOF
+          mkdir -p "$(dirname 'app/build.gradle')"
+          cat > 'app/build.gradle' <<'OLEOF'
+          plugins {
+              id 'com.android.application'
+              id 'org.jetbrains.kotlin.android'
+          }
+
+          android {
+              namespace 'com.midosxq.oplx'
+              compileSdk 34
+              defaultConfig {
+                  applicationId 'com.midosxq.oplx'
+                  minSdk 30
+                  targetSdk 34
+                  versionCode 5
+                  versionName '0.3.0-fase3'
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = '17'
+              }
+              lint {
+                  abortOnError false
+                  checkReleaseBuilds false
+              }
+          }
+          OLEOF
+          mkdir -p "$(dirname 'app/src/main/AndroidManifest.xml')"
+          cat > 'app/src/main/AndroidManifest.xml' <<'OLEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+              <application
+                  android:label="OpenLauncher"
+                  android:icon="@mipmap/ic_launcher"
+                  android:allowBackup="false"
+                  android:theme="@style/OpenLauncherTheme">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="sensorLandscape"
+                      android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          OLEOF
+          mkdir -p "$(dirname 'app/src/main/res/values/colors.xml')"
+          cat > 'app/src/main/res/values/colors.xml' <<'OLEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ic_bg">#000000</color>
+          </resources>
+          OLEOF
+          mkdir -p "$(dirname 'app/src/main/res/values/themes.xml')"
+          cat > 'app/src/main/res/values/themes.xml' <<'OLEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="OpenLauncherTheme" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <item name="android:windowBackground">@android:color/black</item>
+                  <item name="android:windowFullscreen">true</item>
+                  <item name="android:windowLayoutInDisplayCutoutMode">always</item>
+                  <item name="android:statusBarColor">@android:color/black</item>
+                  <item name="android:navigationBarColor">@android:color/black</item>
+              </style>
+          </resources>
+          OLEOF
+          mkdir -p "$(dirname 'app/src/main/res/mipmap-anydpi/ic_launcher.xml')"
+          cat > 'app/src/main/res/mipmap-anydpi/ic_launcher.xml' <<'OLEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_bg" />
+              <foreground android:drawable="@drawable/ic_fg" />
+          </adaptive-icon>
+          OLEOF
+          mkdir -p "$(dirname 'app/src/main/java/com/midosxq/oplx/Pal.kt')"
+          cat > 'app/src/main/java/com/midosxq/oplx/Pal.kt' <<'OLEOF'
+          package com.midosxq.oplx
+
+          import android.graphics.drawable.GradientDrawable
+
+          object Pal {
+              // Latar utama: hitam murni (#000000). Tidak ada abu-abu gelap sebagai latar.
+              val BG = 0xFF000000.toInt()
+              val PANEL = 0xFF000000.toInt()
+              val CARD = 0xFF000000.toInt()
+              // Ungu untuk border dan aksen.
+              val BORDER = 0xFF7C3AED.toInt()
+              val SEP = 0xFF3B1F7A.toInt()
+              val PURPLE = 0xFF8B5CF6.toInt()
+              val PURPLE_LIGHT = 0xFFC4B5FD.toInt()
+              // Teks: putih dan abu-abu.
+              val TEXT = 0xFFFFFFFF.toInt()
+              val MUTED = 0xFF9A9A9A.toInt()
+              // Warna status (hanya untuk teks status).
+              val GREEN = 0xFF34D399.toInt()
+              val AMBER = 0xFFFBBF24.toInt()
+              val RED = 0xFFF87171.toInt()
+              val GREY = 0xFF9CA3AF.toInt()
+          }
+
+          fun rounded(color: Int, radiusDp: Float, density: Float, strokeColor: Int = 0, strokeDp: Float = 0f): GradientDrawable {
+              val g = GradientDrawable()
+              g.setColor(color)
+              g.cornerRadius = radiusDp * density
+              if (strokeDp > 0f) {
+                  g.setStroke(maxOf(1, (strokeDp * density).toInt()), strokeColor)
+              }
+              return g
+          }
+          OLEOF
+          mkdir -p "$(dirname 'app/src/main/java/com/midosxq/oplx/Model.kt')"
+          cat > 'app/src/main/java/com/midosxq/oplx/Model.kt' <<'OLEOF'
+          package com.midosxq.oplx
+
+          /** Status service mapper yang ditampilkan di sidebar. */
+          enum class Svc(val label: String, val color: Int) {
+              RUNNING("RUNNING", Pal.GREEN),
+              STOPPED("STOPPED", Pal.AMBER),
+              ERROR("ERROR", Pal.RED),
+              NOT_ACTIVATED("NOT ACTIVATED", Pal.GREY)
+          }
+
+          /**
+           * Fase 1: belum ada Mapper Service dan belum ada metode aktivasi,
+           * jadi status yang jujur hanya NOT ACTIVATED. Fase 3 yang akan mengubah ini
+           * berdasarkan keadaan service yang sebenarnya.
+           */
+          object StatusModel {
+              var svc: Svc = Svc.NOT_ACTIVATED
+              var method: String = "Not Activated"
+          }
+
+          class Page(val id: String, val title: String, val phase: String, val planned: List<String>)
+
+          object Pages {
+              val all = listOf(
+                  Page(
+                      "library", "Game Library", "FASE 2",
+                      listOf(
+                          "Deteksi game terpasang (sesuai batas visibilitas paket Android)",
+                          "Add Manually untuk game yang tidak terdeteksi",
+                          "Kartu cover 16:9 dari assets/source.zip dan panel detail ala Steam",
+                          "Launch Type per game: Launch Only atau Launch with Mapper Services"
+                      )
+                  ),
+                  Page(
+                      "config", "Game Configuration", "FASE 4-6",
+                      listOf(
+                          "Editor mapper: Touch, Joystick, keyboard, tombol mouse, gamepad (melanjutkan mesin mapper XPlay: WASD joystick, kamera mouse, tap, hotkey)",
+                          "Mouse Settings per game: Sensitivity X/Y, Cursor Lock, Cursor Refresh, Crazy Tap, aksi scroll",
+                          "Smart Auto Text Input (diuji per game)",
+                          "Export/Import keymap .xpp dengan backup dan konfirmasi"
+                      )
+                  ),
+                  Page(
+                      "devices", "Devices", "FASE 3",
+                      listOf(
+                          "Daftar keyboard, mouse, dan gamepad (USB, Bluetooth, hub) yang terlihat oleh Android",
+                          "Nama, tipe, status koneksi, dan kemampuan input"
+                      )
+                  ),
+                  Page(
+                      "highlights", "Highlights", "FASE 7",
+                      listOf(
+                          "Rekam gameplay dengan izin pengguna (melanjutkan perekam XPlay: resolusi, fps, bitrate, audio internal/mic, hotkey)",
+                          "Simpan klip secara lokal, lihat dan kelola"
+                      )
+                  ),
+                  Page(
+                      "settings", "Settings", "FASE 6-7",
+                      listOf(
+                          "Custom Cursor: impor dari galeri atau file manager, dan reset ke default",
+                          "Preferensi tampilan umum"
+                      )
+                  ),
+                  Page(
+                      "activation", "Activation", "FASE 3",
+                      listOf(
+                          "Deteksi metode: root (MagiskSU, KernelSU, KernelSU Next, APatch), Shizuku, ADB Activator",
+                          "Alur aktivasi dan aktivasi ulang yang jelas",
+                          "Status service yang nyata, bukan sekadar izin"
+                      )
+                  )
+              )
+          }
+          OLEOF
+          mkdir -p "$(dirname 'app/src/main/java/com/midosxq/oplx/Ui.kt')"
+          cat > 'app/src/main/java/com/midosxq/oplx/Ui.kt' <<'OLEOF'
+          package com.midosxq.oplx
+
+          import android.content.Context
+          import android.graphics.Color
+          import android.graphics.Typeface
+          import android.graphics.drawable.ColorDrawable
+          import android.graphics.drawable.StateListDrawable
+          import android.view.Gravity
+          import android.view.MotionEvent
+          import android.view.View
+          import android.widget.FrameLayout
+          import android.widget.ImageView
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import java.io.File
+
+          const val WRAP = -2
+          const val MATCH = -1
+
+          class Ui(val ctx: Context) {
+              val dens: Float = ctx.resources.displayMetrics.density
+
+              fun dp(v: Int): Int = (v * dens).toInt()
+
+              fun tv(t: String, sp: Float, color: Int, bold: Boolean = false): TextView {
+                  val v = TextView(ctx)
+                  v.text = t
+                  v.textSize = sp
+                  v.setTextColor(color)
+                  if (bold) v.typeface = Typeface.DEFAULT_BOLD
+                  return v
+              }
+
+              fun lp(w: Int, h: Int, top: Int = 0, left: Int = 0): LinearLayout.LayoutParams {
+                  val l = LinearLayout.LayoutParams(w, h)
+                  l.topMargin = dp(top)
+                  l.leftMargin = dp(left)
+                  return l
+              }
+
+              /** Kartu hitam dengan border ungu. */
+              fun card(): LinearLayout {
+                  val c = LinearLayout(ctx)
+                  c.orientation = LinearLayout.VERTICAL
+                  c.background = rounded(Pal.CARD, 12f, dens, Pal.BORDER, 1f)
+                  c.setPadding(dp(20), dp(16), dp(20), dp(16))
+                  return c
+              }
+
+              fun line(text: String, color: Int = Pal.TEXT, sp: Float = 13f, top: Int = 8): TextView {
+                  val t = tv(text, sp, color)
+                  t.layoutParams = lp(WRAP, WRAP, top)
+                  return t
+              }
+
+              /** Tombol: solid ungu (utama) atau outline ungu (sekunder). Tanpa gradient. */
+              fun pill(text: String, filled: Boolean, onClick: () -> Unit): TextView {
+                  val t = tv(text, 13f, Color.WHITE, true)
+                  if (!filled) t.setTextColor(Pal.PURPLE_LIGHT)
+                  t.setPadding(dp(16), dp(9), dp(16), dp(9))
+                  t.gravity = Gravity.CENTER
+                  t.isClickable = true
+                  t.isFocusable = true
+                  val base = if (filled) Pal.PURPLE else 0
+                  val sld = StateListDrawable()
+                  sld.addState(intArrayOf(android.R.attr.state_pressed), rounded(base, 8f, dens, Pal.PURPLE_LIGHT, 2f))
+                  sld.addState(intArrayOf(android.R.attr.state_hovered), rounded(base, 8f, dens, Pal.PURPLE_LIGHT, 2f))
+                  sld.addState(intArrayOf(android.R.attr.state_focused), rounded(base, 8f, dens, Pal.PURPLE_LIGHT, 2f))
+                  sld.addState(intArrayOf(), rounded(base, 8f, dens, Pal.BORDER, 1f))
+                  t.background = sld
+                  t.setOnClickListener { onClick() }
+                  return t
+              }
+          }
+
+          /** Kartu cover 16:9. Gambar di-crop hanya di lapisan tampilan; file asli tidak diubah. */
+          class GameCard(ctx: Context, private val ui: Ui, private val store: Store) : FrameLayout(ctx) {
+              private val image = ImageView(ctx)
+              private val ph = FrameLayout(ctx)
+              private val icon = ImageView(ctx)
+              private val title = TextView(ctx)
+              var pkg: String = ""
+
+              init {
+                  background = ColorDrawable(Pal.BG)
+                  clipToOutline = true
+                  image.scaleType = ImageView.ScaleType.CENTER_CROP
+                  addView(image, FrameLayout.LayoutParams(MATCH, MATCH))
+
+                  ph.background = ColorDrawable(Pal.BG)
+                  icon.scaleType = ImageView.ScaleType.FIT_CENTER
+                  val ilp = FrameLayout.LayoutParams(ui.dp(56), ui.dp(56))
+                  ilp.gravity = Gravity.CENTER
+                  ph.addView(icon, ilp)
+                  addView(ph, FrameLayout.LayoutParams(MATCH, MATCH))
+
+                  title.setTextColor(Color.WHITE)
+                  title.textSize = 13f
+                  title.typeface = Typeface.DEFAULT_BOLD
+                  title.maxLines = 1
+                  title.setPadding(ui.dp(10), ui.dp(6), ui.dp(10), ui.dp(6))
+                  title.background = ColorDrawable(0xB3000000.toInt())
+                  val tlp = FrameLayout.LayoutParams(MATCH, WRAP)
+                  tlp.gravity = Gravity.BOTTOM
+                  addView(title, tlp)
+
+                  foreground = rounded(0, 10f, ui.dens, Pal.BORDER, 1f)
+                  setOnHoverListener { _, e ->
+                      if (e.action == MotionEvent.ACTION_HOVER_ENTER) {
+                          foreground = rounded(0, 10f, ui.dens, Pal.PURPLE_LIGHT, 2f)
+                      } else if (e.action == MotionEvent.ACTION_HOVER_EXIT) {
+                          foreground = rounded(0, 10f, ui.dens, Pal.BORDER, 1f)
+                      }
+                      false
+                  }
+              }
+
+              override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                  val w = View.MeasureSpec.getSize(widthMeasureSpec)
+                  super.onMeasure(
+                      View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),
+                      View.MeasureSpec.makeMeasureSpec((w * 9f / 16f).toInt(), View.MeasureSpec.EXACTLY)
+                  )
+              }
+
+              fun bind(g: GameEntry, reqW: Int, showTitle: Boolean) {
+                  pkg = g.pkg
+                  title.text = g.label
+                  title.visibility = if (showTitle) View.VISIBLE else View.GONE
+                  image.setImageDrawable(null)
+                  ph.visibility = View.VISIBLE
+                  try {
+                      icon.setImageDrawable(context.packageManager.getApplicationIcon(g.pkg))
+                  } catch (e: Exception) {
+                      icon.setImageDrawable(null)
+                  }
+                  val custom = store.cover(g.pkg)
+                  val src: String? = if (custom != null && File(custom).exists()) {
+                      "file:" + custom
+                  } else {
+                      val b = Covers.bundledFor(g.pkg, g.appLabel)
+                      if (b != null) "asset:" + b else null
+                  }
+                  if (src == null) return
+                  Covers.get(context, src, reqW) { bmp ->
+                      if (pkg == g.pkg && bmp != null) {
+                          image.setImageBitmap(bmp)
+                          ph.visibility = View.GONE
+                      }
+                  }
+              }
+          }
+          OLEOF
+          mkdir -p "$(dirname 'app/src/main/java/com/midosxq/oplx/Store.kt')"
+          cat > 'app/src/main/java/com/midosxq/oplx/Store.kt' <<'OLEOF'
+          package com.midosxq.oplx
+
+          import android.content.Context
+          import org.json.JSONArray
+          import org.json.JSONObject
+
+          class GameEntry(val pkg: String, val label: String, val appLabel: String, val manual: Boolean)
+
+          /**
+           * Penyimpanan lokal ringan (SharedPreferences + JSON) untuk Fase 2.
+           * Kunci utama selalu package name. Room bisa dievaluasi lagi saat data mapper membesar.
+           */
+          class Store(ctx: Context) {
+              private val sp = ctx.applicationContext.getSharedPreferences("ol_library", Context.MODE_PRIVATE)
+
+              private fun strSet(key: String): MutableSet<String> {
+                  val out = LinkedHashSet<String>()
+                  try {
+                      val a = JSONArray(sp.getString(key, "[]"))
+                      for (i in 0 until a.length()) out.add(a.getString(i))
+                  } catch (e: Exception) {
+                  }
+                  return out
+              }
+
+              private fun putSet(key: String, s: Set<String>) {
+                  sp.edit().putString(key, JSONArray(s.toList()).toString()).apply()
+              }
+
+              fun manual(): Set<String> = strSet("manual")
+              fun hidden(): Set<String> = strSet("hidden")
+
+              fun addManual(p: String) {
+                  val m = strSet("manual")
+                  m.add(p)
+                  putSet("manual", m)
+                  val h = strSet("hidden")
+                  if (h.remove(p)) putSet("hidden", h)
+              }
+
+              fun removeManual(p: String) {
+                  val m = strSet("manual")
+                  if (m.remove(p)) putSet("manual", m)
+              }
+
+              fun hide(p: String) {
+                  val h = strSet("hidden")
+                  h.add(p)
+                  putSet("hidden", h)
+              }
+
+              fun clearHidden() {
+                  putSet("hidden", emptySet())
+              }
+
+              private fun all(): JSONObject = try {
+                  JSONObject(sp.getString("games", "{}"))
+              } catch (e: Exception) {
+                  JSONObject()
+              }
+
+              private fun field(pkg: String, f: String): String? {
+                  val o = all().optJSONObject(pkg) ?: return null
+                  return if (o.has(f)) o.getString(f) else null
+              }
+
+              private fun setField(pkg: String, f: String, v: String?) {
+                  val a = all()
+                  val o = a.optJSONObject(pkg) ?: JSONObject()
+                  if (v == null) o.remove(f) else o.put(f, v)
+                  a.put(pkg, o)
+                  sp.edit().putString("games", a.toString()).apply()
+              }
+
+              fun title(pkg: String): String? = field(pkg, "title")
+              fun setTitle(pkg: String, v: String?) = setField(pkg, "title", v)
+              fun desc(pkg: String): String? = field(pkg, "desc")
+              fun setDesc(pkg: String, v: String?) = setField(pkg, "desc", v)
+              fun cover(pkg: String): String? = field(pkg, "cover")
+              fun setCover(pkg: String, v: String?) = setField(pkg, "cover", v)
+
+              /** "only" (Launch Only, default) atau "mapper" (Launch with Mapper Services). */
+              fun launchType(pkg: String): String = field(pkg, "launch") ?: "only"
+              fun setLaunchType(pkg: String, v: String) = setField(pkg, "launch", v)
+          }
+          OLEOF
+          mkdir -p "$(dirname 'app/src/main/java/com/midosxq/oplx/Covers.kt')"
+          cat > 'app/src/main/java/com/midosxq/oplx/Covers.kt' <<'OLEOF'
+          package com.midosxq.oplx
+
+          import android.content.Context
+          import android.graphics.Bitmap
+          import android.graphics.BitmapFactory
+          import android.os.Handler
+          import android.os.Looper
+          import android.util.LruCache
+          import java.io.File
+          import java.io.InputStream
+          import java.util.concurrent.Executors
+
+          object Covers {
+              private val FILES = listOf(
+                  "bloodstrike.png", "callofduty.png", "com.rockstar.gta3.png",
+                  "com.rockstargames.gtasa.png", "com.rockstargames.gtavc.png",
+                  "deltaforce.png", "ff.png", "ffmax.png", "minecraft.png", "mlbb.png"
+              )
+              private val ui = Handler(Looper.getMainLooper())
+              private val pool = Executors.newFixedThreadPool(2)
+              private val cache = object : LruCache<String, Bitmap>((Runtime.getRuntime().maxMemory() / 8).toInt()) {
+                  override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
+              }
+
+              /**
+               * Cover bawaan yang cocok untuk app terpasang, atau null kalau tidak yakin.
+               * 1) nama file == package name (dicocokkan persis), 2) label app dari metadata terpasang.
+               * Tidak menebak package. Free Fire dan Free Fire MAX tidak pernah tertukar.
+               */
+              fun bundledFor(pkg: String, label: String): String? {
+                  val exact = pkg + ".png"
+                  if (FILES.contains(exact)) return exact
+                  val l = label.lowercase().replace(Regex("[^a-z0-9]"), "")
+                  return when {
+                      l.contains("freefire") && l.contains("max") -> "ffmax.png"
+                      l.contains("freefire") -> "ff.png"
+                      l.contains("bloodstrike") -> "bloodstrike.png"
+                      l.contains("callofduty") && l.contains("mobile") && !l.contains("warzone") -> "callofduty.png"
+                      l.contains("deltaforce") -> "deltaforce.png"
+                      l.contains("minecraft") -> "minecraft.png"
+                      l.contains("mobilelegends") -> "mlbb.png"
+                      else -> null
+                  }
+              }
+
+              private fun decode(open: () -> InputStream?, reqW: Int): Bitmap? {
+                  val o = BitmapFactory.Options()
+                  o.inJustDecodeBounds = true
+                  open()?.use { BitmapFactory.decodeStream(it, null, o) }
+                  if (o.outWidth <= 0) return null
+                  var s = 1
+                  while (o.outWidth / (s * 2) >= reqW) s *= 2
+                  val o2 = BitmapFactory.Options()
+                  o2.inSampleSize = s
+                  return open()?.use { BitmapFactory.decodeStream(it, null, o2) }
+              }
+
+              /** src: "asset:<nama file>" atau "file:<path>". Dimuat di thread latar dengan inSampleSize. */
+              fun get(ctx: Context, src: String, reqW: Int, cb: (Bitmap?) -> Unit) {
+                  val app = ctx.applicationContext
+                  val key = src + "@" + reqW
+                  val hit = cache.get(key)
+                  if (hit != null) {
+                      cb(hit)
+                      return
+                  }
+                  pool.execute {
+                      val bmp = try {
+                          decode({
+                              if (src.startsWith("asset:")) app.assets.open("covers/" + src.substring(6))
+                              else File(src.substring(5)).inputStream()
+                          }, reqW)
+                      } catch (e: Exception) {
+                          null
+                      }
+                      if (bmp != null) cache.put(key, bmp)
+                      ui.post { cb(bmp) }
+                  }
+              }
+          }
+          OLEOF
+          mkdir -p "$(dirname 'app/src/main/java/com/midosxq/oplx/LibraryView.kt')"
+          cat > 'app/src/main/java/com/midosxq/oplx/LibraryView.kt' <<'OLEOF'
+          package com.midosxq.oplx
+
+          import android.app.AlertDialog
+          import android.content.Intent
+          import android.content.pm.ApplicationInfo
+          import android.graphics.BitmapFactory
+          import android.graphics.Typeface
+          import android.net.Uri
+          import android.text.Editable
+          import android.text.InputType
+          import android.text.TextWatcher
+          import android.view.Gravity
+          import android.view.View
+          import android.view.ViewGroup
+          import android.widget.ArrayAdapter
+          import android.widget.BaseAdapter
+          import android.widget.EditText
+          import android.widget.FrameLayout
+          import android.widget.GridView
+          import android.widget.LinearLayout
+          import android.widget.ListView
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import android.widget.Toast
+          import java.io.File
+
+          class LibraryView(private val act: MainActivity) {
+              private val ui = Ui(act)
+              private val store = Store(act)
+              private val root = FrameLayout(act)
+              private var games: List<GameEntry> = emptyList()
+              private var loaded = false
+              private var loading = false
+              private var detail: GameEntry? = null
+
+              fun view(): View {
+                  if (!loaded && !loading) refresh()
+                  return root
+              }
+
+              fun back(): Boolean {
+                  if (detail != null) {
+                      detail = null
+                      showGrid()
+                      return true
+                  }
+                  return false
+              }
+
+              fun refresh() {
+                  loading = true
+                  root.removeAllViews()
+                  val t = ui.tv("Memuat daftar game...", 15f, Pal.MUTED)
+                  t.setPadding(ui.dp(36), ui.dp(30), ui.dp(36), 0)
+                  root.addView(t)
+                  Thread {
+                      val g = detect()
+                      act.runOnUiThread {
+                          games = g
+                          loaded = true
+                          loading = false
+                          detail = null
+                          showGrid()
+                      }
+                  }.start()
+              }
+
+              private fun detect(): List<GameEntry> {
+                  val pm = act.packageManager
+                  val manual = store.manual()
+                  val hidden = store.hidden()
+                  val out = ArrayList<GameEntry>()
+                  val seen = HashSet<String>()
+                  for (ai in pm.getInstalledApplications(0)) {
+                      val pkg = ai.packageName
+                      if (pkg == act.packageName) continue
+                      if (pm.getLaunchIntentForPackage(pkg) == null) continue
+                      val label = pm.getApplicationLabel(ai).toString()
+                      val flagged = ai.category == ApplicationInfo.CATEGORY_GAME || (ai.flags and ApplicationInfo.FLAG_IS_GAME) != 0
+                      val isManual = manual.contains(pkg)
+                      val auto = flagged || Covers.bundledFor(pkg, label) != null
+                      if (!isManual && (!auto || hidden.contains(pkg))) continue
+                      if (seen.add(pkg)) out.add(GameEntry(pkg, store.title(pkg) ?: label, label, isManual))
+                  }
+                  return out.sortedBy { it.label.lowercase() }
+              }
+
+              private fun showGrid() {
+                  root.removeAllViews()
+                  val col = LinearLayout(act)
+                  col.orientation = LinearLayout.VERTICAL
+                  col.setPadding(ui.dp(32), ui.dp(24), ui.dp(32), 0)
+
+                  val head = LinearLayout(act)
+                  head.orientation = LinearLayout.HORIZONTAL
+                  head.gravity = Gravity.CENTER_VERTICAL
+                  head.addView(ui.tv("Game Library", 28f, Pal.TEXT, true), LinearLayout.LayoutParams(0, WRAP, 1f))
+                  head.addView(ui.pill("Refresh", false) { refresh() }, ui.lp(WRAP, WRAP))
+                  head.addView(ui.pill("Add Manually", true) { addManually() }, ui.lp(WRAP, WRAP, 0, 10))
+                  col.addView(head)
+
+                  val hiddenCount = store.hidden().size
+                  if (hiddenCount > 0) {
+                      val h = ui.tv(hiddenCount.toString() + " game disembunyikan. Ketuk untuk menampilkan lagi.", 12f, Pal.PURPLE_LIGHT)
+                      h.isClickable = true
+                      h.setOnClickListener {
+                          store.clearHidden()
+                          refresh()
+                      }
+                      col.addView(h, ui.lp(WRAP, WRAP, 6))
+                  }
+                  col.addView(ui.tv(games.size.toString() + " game", 12f, Pal.MUTED), ui.lp(WRAP, WRAP, 4))
+
+                  if (games.isEmpty()) {
+                      val c = LinearLayout(act)
+                      c.orientation = LinearLayout.VERTICAL
+                      c.background = rounded(Pal.CARD, 12f, ui.dens, Pal.BORDER, 1f)
+                      c.setPadding(ui.dp(20), ui.dp(16), ui.dp(20), ui.dp(16))
+                      c.addView(ui.tv("Belum ada game terdeteksi", 15f, Pal.AMBER, true))
+                      c.addView(
+                          ui.tv("Android hanya mengizinkan penandaan game bagi app yang mendeklarasikannya. Gunakan Add Manually untuk menambahkan app apa pun.", 13f, Pal.TEXT),
+                          ui.lp(WRAP, WRAP, 8)
+                      )
+                      col.addView(c, ui.lp(MATCH, WRAP, 16))
+                  } else {
+                      val grid = GridView(act)
+                      grid.numColumns = GridView.AUTO_FIT
+                      grid.columnWidth = ui.dp(220)
+                      grid.stretchMode = GridView.STRETCH_COLUMN_WIDTH
+                      grid.horizontalSpacing = ui.dp(16)
+                      grid.verticalSpacing = ui.dp(16)
+                      grid.isVerticalScrollBarEnabled = false
+                      grid.setPadding(0, ui.dp(14), 0, ui.dp(24))
+                      grid.clipToPadding = false
+                      grid.setDrawSelectorOnTop(true)
+                      grid.selector = rounded(0, 10f, ui.dens, Pal.PURPLE, 2f)
+                      grid.adapter = object : BaseAdapter() {
+                          override fun getCount(): Int = games.size
+                          override fun getItem(position: Int): Any = games[position]
+                          override fun getItemId(position: Int): Long = position.toLong()
+                          override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
+                              val card = (convertView as? GameCard) ?: GameCard(act, ui, store)
+                              card.bind(games[position], 480, true)
+                              return card
+                          }
+                      }
+                      grid.setOnItemClickListener { _, _, pos, _ -> showDetail(games[pos]) }
+                      col.addView(grid, LinearLayout.LayoutParams(MATCH, 0, 1f))
+                  }
+                  root.addView(col, FrameLayout.LayoutParams(MATCH, MATCH))
+              }
+
+              private fun fresh(g: GameEntry): GameEntry {
+                  val f = GameEntry(g.pkg, store.title(g.pkg) ?: g.appLabel, g.appLabel, g.manual)
+                  games = games.map { if (it.pkg == g.pkg) f else it }
+                  return f
+              }
+
+              private fun showDetail(g: GameEntry) {
+                  detail = g
+                  root.removeAllViews()
+                  val sv = ScrollView(act)
+                  val col = LinearLayout(act)
+                  col.orientation = LinearLayout.VERTICAL
+                  col.setPadding(ui.dp(32), ui.dp(20), ui.dp(32), ui.dp(28))
+                  col.addView(ui.pill("<  Library", false) { back() }, ui.lp(WRAP, WRAP))
+
+                  val row = LinearLayout(act)
+                  row.orientation = LinearLayout.HORIZONTAL
+                  val card = GameCard(act, ui, store)
+                  card.bind(g, 960, false)
+                  row.addView(card, LinearLayout.LayoutParams(0, WRAP, 5f))
+
+                  val info = LinearLayout(act)
+                  info.orientation = LinearLayout.VERTICAL
+                  info.setPadding(ui.dp(24), 0, 0, 0)
+                  info.addView(ui.tv(g.label, 26f, Pal.TEXT, true))
+                  val rename = ui.tv("Ubah nama tampilan", 12f, Pal.PURPLE_LIGHT)
+                  rename.isClickable = true
+                  rename.setOnClickListener {
+                      editText("Nama tampilan", g.label, false) { v ->
+                          store.setTitle(g.pkg, if (v.isEmpty()) null else v)
+                          showDetail(fresh(g))
+                      }
+                  }
+                  info.addView(rename, ui.lp(WRAP, WRAP, 2))
+                  val pk = ui.tv(g.pkg, 12f, Pal.MUTED)
+                  pk.typeface = Typeface.MONOSPACE
+                  info.addView(pk, ui.lp(WRAP, WRAP, 6))
+
+                  val d = store.desc(g.pkg)
+                  val desc = ui.tv(if (d.isNullOrEmpty()) "Belum ada deskripsi." else d, 14f, if (d.isNullOrEmpty()) Pal.MUTED else Pal.TEXT)
+                  info.addView(desc, ui.lp(WRAP, WRAP, 12))
+                  val editDesc = ui.tv("Ubah deskripsi", 12f, Pal.PURPLE_LIGHT)
+                  editDesc.isClickable = true
+                  editDesc.setOnClickListener {
+                      editText("Deskripsi", d ?: "", true) { v ->
+                          store.setDesc(g.pkg, if (v.isEmpty()) null else v)
+                          showDetail(fresh(g))
+                      }
+                  }
+                  info.addView(editDesc, ui.lp(WRAP, WRAP, 2))
+
+                  val launch = ui.pill("\u25B6  Launch", true) { launchGame(g) }
+                  launch.textSize = 16f
+                  launch.setPadding(ui.dp(28), ui.dp(12), ui.dp(28), ui.dp(12))
+                  info.addView(launch, ui.lp(WRAP, WRAP, 18))
+
+                  info.addView(ui.tv("Launch Type", 12f, Pal.MUTED, true), ui.lp(WRAP, WRAP, 18))
+                  val seg = LinearLayout(act)
+                  seg.orientation = LinearLayout.HORIZONTAL
+                  seg.background = rounded(0, 8f, ui.dens, Pal.BORDER, 1f)
+                  val optOnly = ui.tv("Launch Only", 13f, Pal.MUTED, true)
+                  val optMap = ui.tv("Launch with Mapper Services", 13f, Pal.MUTED, true)
+                  for (o in listOf(optOnly, optMap)) {
+                      o.setPadding(ui.dp(14), ui.dp(9), ui.dp(14), ui.dp(9))
+                      o.isClickable = true
+                  }
+                  seg.addView(optOnly, LinearLayout.LayoutParams(WRAP, WRAP))
+                  seg.addView(optMap, LinearLayout.LayoutParams(WRAP, WRAP))
+                  info.addView(seg, ui.lp(WRAP, WRAP, 6))
+                  val note = ui.tv("", 12f, Pal.MUTED)
+                  info.addView(note, ui.lp(WRAP, WRAP, 8))
+
+                  fun paint() {
+                      val t = store.launchType(g.pkg)
+                      val onlySel = t != "mapper"
+                      optOnly.setTextColor(if (onlySel) 0xFFFFFFFF.toInt() else Pal.MUTED)
+                      optOnly.background = rounded(if (onlySel) Pal.PURPLE else 0, 8f, ui.dens)
+                      optMap.setTextColor(if (!onlySel) 0xFFFFFFFF.toInt() else Pal.MUTED)
+                      optMap.background = rounded(if (!onlySel) Pal.PURPLE else 0, 8f, ui.dens)
+                      if (onlySel) {
+                          note.text = "Game dibuka tanpa Mapper Services. Pengaturan mapper dan mouse tidak berlaku."
+                          note.setTextColor(Pal.MUTED)
+                      } else {
+                          note.text = "Mapper Services belum tersedia di versi ini (Fase 4). Pilihan disimpan, tetapi saat ini game tetap dibuka tanpa mapper."
+                          note.setTextColor(Pal.AMBER)
+                      }
+                  }
+                  optOnly.setOnClickListener {
+                      store.setLaunchType(g.pkg, "only")
+                      paint()
+                  }
+                  optMap.setOnClickListener {
+                      store.setLaunchType(g.pkg, "mapper")
+                      paint()
+                  }
+                  paint()
+
+                  val r1 = LinearLayout(act)
+                  r1.orientation = LinearLayout.HORIZONTAL
+                  r1.addView(ui.pill("Game Configuration", false) { act.openConfig(g) }, ui.lp(WRAP, WRAP))
+                  r1.addView(ui.pill("Ganti Cover", false) { act.pickCover(g.pkg) }, ui.lp(WRAP, WRAP, 0, 10))
+                  val custom = store.cover(g.pkg)
+                  if (custom != null) {
+                      r1.addView(ui.pill("Reset Cover", false) {
+                          File(custom).delete()
+                          store.setCover(g.pkg, null)
+                          showDetail(g)
+                      }, ui.lp(WRAP, WRAP, 0, 10))
+                  }
+                  info.addView(r1, ui.lp(WRAP, WRAP, 16))
+
+                  val danger = if (g.manual) {
+                      ui.pill("Hapus dari Library", false) {
+                          store.removeManual(g.pkg)
+                          games = games.filter { it.pkg != g.pkg }
+                          back()
+                          refresh()
+                      }
+                  } else {
+                      ui.pill("Sembunyikan", false) {
+                          store.hide(g.pkg)
+                          games = games.filter { it.pkg != g.pkg }
+                          back()
+                          refresh()
+                      }
+                  }
+                  info.addView(danger, ui.lp(WRAP, WRAP, 10))
+
+                  row.addView(info, LinearLayout.LayoutParams(0, WRAP, 4f))
+                  col.addView(row, ui.lp(MATCH, WRAP, 18))
+                  sv.addView(col)
+                  root.addView(sv, FrameLayout.LayoutParams(MATCH, MATCH))
+              }
+
+              private fun launchGame(g: GameEntry) {
+                  if (store.launchType(g.pkg) == "mapper") {
+                      Toast.makeText(act, "Mapper Services belum tersedia (Fase 4). Game dibuka tanpa mapper.", Toast.LENGTH_LONG).show()
+                  }
+                  val i = act.packageManager.getLaunchIntentForPackage(g.pkg)
+                  if (i == null) {
+                      Toast.makeText(act, "Game tidak bisa dibuka (app tidak terpasang?)", Toast.LENGTH_LONG).show()
+                      return
+                  }
+                  i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                  try {
+                      act.startActivity(i)
+                  } catch (e: Exception) {
+                      Toast.makeText(act, "Gagal membuka game: " + e.message, Toast.LENGTH_LONG).show()
+                  }
+              }
+
+              private fun editText(title: String, cur: String, multiline: Boolean, onSave: (String) -> Unit) {
+                  val et = EditText(act)
+                  et.setText(cur)
+                  et.setSelection(et.text.length)
+                  if (multiline) {
+                      et.minLines = 3
+                      et.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                  } else {
+                      et.setSingleLine(true)
+                  }
+                  AlertDialog.Builder(act)
+                      .setTitle(title)
+                      .setView(et)
+                      .setPositiveButton("Simpan") { _, _ -> onSave(et.text.toString().trim()) }
+                      .setNegativeButton("Batal", null)
+                      .show()
+              }
+
+              private fun addManually() {
+                  val pm = act.packageManager
+                  val shown = games.map { it.pkg }.toSet()
+                  val q = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                  val items = pm.queryIntentActivities(q, 0)
+                      .map { Pair(it.loadLabel(pm).toString(), it.activityInfo.packageName) }
+                      .filter { it.second != act.packageName && !shown.contains(it.second) }
+                      .distinctBy { it.second }
+                      .sortedBy { it.first.lowercase() }
+                  var cur = items
+
+                  val box = LinearLayout(act)
+                  box.orientation = LinearLayout.VERTICAL
+                  box.setPadding(ui.dp(16), ui.dp(8), ui.dp(16), 0)
+                  val search = EditText(act)
+                  search.hint = "Cari app..."
+                  search.setSingleLine(true)
+                  box.addView(search, LinearLayout.LayoutParams(MATCH, WRAP))
+                  val list = ListView(act)
+                  val adapter = ArrayAdapter<String>(act, android.R.layout.simple_list_item_1, ArrayList(items.map { it.first + "\n" + it.second }))
+                  list.adapter = adapter
+                  box.addView(list, LinearLayout.LayoutParams(MATCH, ui.dp(300)))
+
+                  val dlg = AlertDialog.Builder(act)
+                      .setTitle("Add Manually")
+                      .setView(box)
+                      .setNegativeButton("Batal", null)
+                      .create()
+
+                  search.addTextChangedListener(object : TextWatcher {
+                      override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                      override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                      override fun afterTextChanged(s: Editable?) {
+                          val t = s.toString().trim().lowercase()
+                          cur = items.filter { t.isEmpty() || it.first.lowercase().contains(t) || it.second.lowercase().contains(t) }
+                          adapter.clear()
+                          adapter.addAll(cur.map { it.first + "\n" + it.second })
+                      }
+                  })
+                  list.setOnItemClickListener { _, _, pos, _ ->
+                      if (pos < cur.size) {
+                          store.addManual(cur[pos].second)
+                          dlg.dismiss()
+                          refresh()
+                      }
+                  }
+                  dlg.show()
+              }
+
+              fun onCoverPicked(pkg: String, uri: Uri) {
+                  Thread {
+                      var ok = false
+                      val dir = File(act.filesDir, "covers")
+                      dir.mkdirs()
+                      val out = File(dir, pkg + "_" + System.currentTimeMillis() + ".img")
+                      try {
+                          var total = 0L
+                          val ins = act.contentResolver.openInputStream(uri)
+                          if (ins != null) {
+                              ins.use { input ->
+                                  out.outputStream().use { os ->
+                                      val buf = ByteArray(65536)
+                                      while (true) {
+                                          val n = input.read(buf)
+                                          if (n < 0) break
+                                          total += n
+                                          if (total > 30L * 1024 * 1024) throw Exception("file terlalu besar")
+                                          os.write(buf, 0, n)
+                                      }
+                                  }
+                              }
+                              val o = BitmapFactory.Options()
+                              o.inJustDecodeBounds = true
+                              BitmapFactory.decodeFile(out.path, o)
+                              if (o.outWidth > 0 && o.outHeight > 0) {
+                                  val old = store.cover(pkg)
+                                  if (old != null) File(old).delete()
+                                  store.setCover(pkg, out.path)
+                                  ok = true
+                              }
+                          }
+                      } catch (e: Exception) {
+                          ok = false
+                      }
+                      if (!ok) out.delete()
+                      act.runOnUiThread {
+                          Toast.makeText(act, if (ok) "Cover diganti" else "Gambar tidak valid atau terlalu besar (maks 30 MB)", Toast.LENGTH_LONG).show()
+                          val d = detail
+                          if (ok && d != null && d.pkg == pkg) showDetail(d)
+                      }
+                  }.start()
+              }
+          }
+          OLEOF
+          mkdir -p "$(dirname 'app/src/main/java/com/midosxq/oplx/Access.kt')"
+          cat > 'app/src/main/java/com/midosxq/oplx/Access.kt' <<'OLEOF'
+          package com.midosxq.oplx
+
+          import android.content.Context
+          import android.provider.Settings
+          import java.io.BufferedReader
+          import java.io.InputStreamReader
+          import java.util.concurrent.TimeUnit
+
+          class AccessInfo(
+              val rootState: Int,
+              val rootDetail: String,
+              val manager: String,
+              val evidence: String,
+              val shizukuVersion: String?,
+              val adbUsb: Boolean,
+              val adbWifi: Boolean
+          ) {
+              val rootGranted: Boolean get() = rootState == ROOT_GRANTED
+
+              companion object {
+                  const val ROOT_UNCHECKED = 0
+                  const val ROOT_MISSING = 1
+                  const val ROOT_DENIED = 2
+                  const val ROOT_GRANTED = 3
+              }
+          }
+
+          /**
+           * Fase 3: evaluasi jalur akses. Hanya root yang benar-benar diverifikasi (su mengembalikan uid=0).
+           * Shizuku dan ADB hanya dideteksi (terpasang / diaktifkan), integrasinya belum ada.
+           * Root manager tidak pernah ditebak: kalau bukti tidak jelas atau bertentangan, hasilnya "Unknown".
+           */
+          object AccessMgr {
+              private const val PKG_SHIZUKU = "moe.shizuku.privileged.api"
+              private const val PKG_MAGISK = "com.topjohnwu.magisk"
+              private const val PKG_KSU = "me.weishu.kernelsu"
+              private const val PKG_KSUN = "com.rifsxd.ksunext"
+              private const val PKG_APATCH = "me.bmax.apatch"
+
+              @Volatile var info: AccessInfo = AccessInfo(AccessInfo.ROOT_UNCHECKED, "Belum diperiksa", "", "", null, false, false)
+              @Volatile var revoked: Boolean = false
+              @Volatile var busy: Boolean = false
+              @Volatile var onChange: (() -> Unit)? = null
+
+              private fun sp(c: Context) = c.applicationContext.getSharedPreferences("ol_access", Context.MODE_PRIVATE)
+
+              fun activated(c: Context): Boolean = sp(c).getBoolean("activated", false)
+              fun savedMethod(c: Context): String = sp(c).getString("method", "") ?: ""
+
+              fun methodLabel(manager: String): String = "Rooted Mode (" + manager + ")"
+
+              private fun pkgVersion(c: Context, pkg: String): String? = try {
+                  c.packageManager.getPackageInfo(pkg, 0).versionName ?: "?"
+              } catch (e: Exception) {
+                  null
+              }
+
+              private fun exec(args: List<String>, timeoutSec: Long): Pair<Int, String>? {
+                  return try {
+                      val p = ProcessBuilder(args).redirectErrorStream(true).start()
+                      val out = StringBuilder()
+                      val t = Thread {
+                          try {
+                              BufferedReader(InputStreamReader(p.inputStream)).use { r ->
+                                  while (true) {
+                                      val l = r.readLine() ?: break
+                                      out.append(l).append('\n')
+                                  }
+                              }
+                          } catch (e: Exception) {
+                          }
+                      }
+                      t.start()
+                      if (!p.waitFor(timeoutSec, TimeUnit.SECONDS)) {
+                          p.destroy()
+                          return Pair(-2, out.toString())
+                      }
+                      t.join(500)
+                      Pair(p.exitValue(), out.toString())
+                  } catch (e: Exception) {
+                      null
+                  }
+              }
+
+              private fun passive(c: Context, rootState: Int, detail: String, manager: String, evidence: String): AccessInfo {
+                  val cr = c.contentResolver
+                  val usb = try { Settings.Global.getInt(cr, Settings.Global.ADB_ENABLED, 0) == 1 } catch (e: Exception) { false }
+                  val wifi = try { Settings.Global.getInt(cr, "adb_wifi_enabled", 0) == 1 } catch (e: Exception) { false }
+                  return AccessInfo(rootState, detail, manager, evidence, pkgVersion(c, PKG_SHIZUKU), usb, wifi)
+              }
+
+              /** Pemeriksaan pasif tanpa meminta root (tidak memunculkan dialog izin). */
+              fun refreshPassive(c: Context) {
+                  Thread {
+                      val cur = info
+                      info = passive(c, cur.rootState, cur.rootDetail, cur.manager, cur.evidence)
+                      onChange?.invoke()
+                  }.start()
+              }
+
+              private fun verifyRoot(c: Context): AccessInfo {
+                  val r = exec(listOf("su", "-c", "id"), 25)
+                      ?: return passive(c, AccessInfo.ROOT_MISSING, "Binary su tidak ditemukan. Perangkat ini tampaknya tidak di-root.", "", "")
+                  if (r.first == -2) {
+                      return passive(c, AccessInfo.ROOT_DENIED, "Root manager tidak menjawab (timeout). Izinkan permintaan root lalu coba lagi.", "", "")
+                  }
+                  if (!r.second.contains("uid=0")) {
+                      return passive(c, AccessInfo.ROOT_DENIED, "Akses root ditolak atau tidak valid.", "", r.second.trim())
+                  }
+                  val suv = exec(listOf("su", "-v"), 5)?.second?.trim() ?: ""
+                  val dirsOut = exec(listOf("su", "-c", "ls -d /data/adb/magisk /data/adb/ksu /data/adb/ksud /data/adb/ap /data/adb/apd 2>/dev/null"), 5)?.second ?: ""
+                  val dirs = dirsOut.split("\n").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+                  val sl = suv.lowercase()
+                  val vMagisk = pkgVersion(c, PKG_MAGISK) != null
+                  val vKsu = pkgVersion(c, PKG_KSU) != null
+                  val vKsun = pkgVersion(c, PKG_KSUN) != null
+                  val vAp = pkgVersion(c, PKG_APATCH) != null
+
+                  val found = ArrayList<String>()
+                  if (sl.contains("magisk") || dirs.contains("/data/adb/magisk") || vMagisk) found.add("MagiskSU")
+                  val ksuFamily = sl.contains("kernelsu") || sl.contains("ksu") || dirs.contains("/data/adb/ksu") || dirs.contains("/data/adb/ksud") || vKsu || vKsun
+                  if (ksuFamily) {
+                      if (vKsun && !vKsu) found.add("KernelSU Next")
+                      else if (vKsu && !vKsun) found.add("KernelSU")
+                      else found.add("?")
+                  }
+                  if (dirs.contains("/data/adb/ap") || dirs.contains("/data/adb/apd") || vAp) found.add("APatch")
+                  val manager = if (found.size == 1 && found[0] != "?") found[0] else "Unknown"
+
+                  val ev = "su -v: " + (if (suv.isEmpty()) "(kosong)" else suv) +
+                      " | folder: " + (if (dirs.isEmpty()) "-" else dirs.joinToString(",")) +
+                      " | app manager: " + listOf(
+                          if (vMagisk) "Magisk" else "", if (vKsu) "KernelSU" else "",
+                          if (vKsun) "KernelSU Next" else "", if (vAp) "APatch" else ""
+                      ).filter { it.isNotEmpty() }.joinToString(",").ifEmpty { "-" }
+                  return passive(c, AccessInfo.ROOT_GRANTED, "Akses root terverifikasi (uid=0).", manager, ev)
+              }
+
+              /** Dipanggil saat app dibuka: validasi ulang akses yang pernah aktif; tidak meminta root bila belum pernah aktif. */
+              fun startup(c: Context) {
+                  if (busy) return
+                  busy = true
+                  Thread {
+                      if (activated(c)) {
+                          val res = verifyRoot(c)
+                          info = res
+                          if (res.rootGranted) {
+                              sp(c).edit().putString("method", methodLabel(res.manager)).apply()
+                              revoked = false
+                          } else {
+                              sp(c).edit().putBoolean("activated", false).apply()
+                              revoked = true
+                          }
+                      } else {
+                          val cur = info
+                          info = passive(c, cur.rootState, cur.rootDetail, cur.manager, cur.evidence)
+                      }
+                      busy = false
+                      onChange?.invoke()
+                  }.start()
+              }
+
+              /** Aktivasi lewat root: memicu permintaan izin dari root manager dan memverifikasi hasilnya. */
+              fun activateRoot(c: Context) {
+                  if (busy) return
+                  busy = true
+                  onChange?.invoke()
+                  Thread {
+                      val res = verifyRoot(c)
+                      info = res
+                      if (res.rootGranted) {
+                          sp(c).edit().putBoolean("activated", true).putString("method", methodLabel(res.manager)).apply()
+                          revoked = false
+                      }
+                      busy = false
+                      onChange?.invoke()
+                  }.start()
+              }
+
+              fun deactivate(c: Context) {
+                  sp(c).edit().putBoolean("activated", false).apply()
+                  revoked = false
+                  onChange?.invoke()
+              }
+
+              /** Memperbarui StatusModel dari keadaan nyata. Mapper Service belum ada di Fase 3, jadi tidak pernah RUNNING. */
+              fun applyStatus(c: Context) {
+                  if (busy && activated(c) && !info.rootGranted) {
+                      StatusModel.svc = Svc.NOT_ACTIVATED
+                      StatusModel.method = "Memeriksa akses..."
+                  } else if (activated(c) && info.rootGranted) {
+                      StatusModel.svc = Svc.STOPPED
+                      StatusModel.method = methodLabel(info.manager)
+                  } else {
+                      StatusModel.svc = Svc.NOT_ACTIVATED
+                      StatusModel.method = "Not Activated"
+                  }
+              }
+          }
+          OLEOF
+          mkdir -p "$(dirname 'app/src/main/java/com/midosxq/oplx/DevicesView.kt')"
+          cat > 'app/src/main/java/com/midosxq/oplx/DevicesView.kt' <<'OLEOF'
+          package com.midosxq.oplx
+
+          import android.content.Context
+          import android.hardware.input.InputManager
+          import android.hardware.usb.UsbManager
+          import android.os.Handler
+          import android.os.Looper
+          import android.view.Gravity
+          import android.view.InputDevice
+          import android.view.View
+          import android.widget.FrameLayout
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+
+          /** Fase 3: daftar perangkat input yang terlihat oleh Android (live lewat InputDeviceListener). */
+          class DevicesView(private val act: MainActivity) : InputManager.InputDeviceListener {
+              private val ui = Ui(act)
+              private val root = FrameLayout(act)
+              private val im = act.getSystemService(Context.INPUT_SERVICE) as InputManager
+              private var showAll = false
+              private var registered = false
+
+              fun view(): View {
+                  build()
+                  return root
+              }
+
+              fun start() {
+                  if (!registered) {
+                      im.registerInputDeviceListener(this, Handler(Looper.getMainLooper()))
+                      registered = true
+                  }
+              }
+
+              fun stop() {
+                  if (registered) {
+                      im.unregisterInputDeviceListener(this)
+                      registered = false
+                  }
+              }
+
+              override fun onInputDeviceAdded(deviceId: Int) { if (registered) build() }
+              override fun onInputDeviceRemoved(deviceId: Int) { if (registered) build() }
+              override fun onInputDeviceChanged(deviceId: Int) { if (registered) build() }
+
+              private fun kinds(d: InputDevice): List<String> {
+                  val s = d.sources
+                  val out = ArrayList<String>()
+                  if ((s and InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD && d.keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC) out.add("Keyboard")
+                  if ((s and InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE) out.add("Mouse")
+                  if ((s and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD || (s and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) out.add("Gamepad")
+                  if ((s and InputDevice.SOURCE_TOUCHSCREEN) == InputDevice.SOURCE_TOUCHSCREEN) out.add("Touchscreen")
+                  return out
+              }
+
+              private fun sourceNames(d: InputDevice): String {
+                  val s = d.sources
+                  val n = ArrayList<String>()
+                  if ((s and InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD) n.add("keyboard")
+                  if ((s and InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE) n.add("mouse")
+                  if ((s and InputDevice.SOURCE_MOUSE_RELATIVE) == InputDevice.SOURCE_MOUSE_RELATIVE) n.add("mouse-relatif")
+                  if ((s and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD) n.add("gamepad")
+                  if ((s and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) n.add("joystick")
+                  if ((s and InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD) n.add("dpad")
+                  if ((s and InputDevice.SOURCE_TOUCHSCREEN) == InputDevice.SOURCE_TOUCHSCREEN) n.add("touchscreen")
+                  if ((s and InputDevice.SOURCE_STYLUS) == InputDevice.SOURCE_STYLUS) n.add("stylus")
+                  return if (n.isEmpty()) "-" else n.joinToString(", ")
+              }
+
+              private fun usbIds(): Set<String> {
+                  return try {
+                      val um = act.getSystemService(Context.USB_SERVICE) as UsbManager
+                      um.deviceList.values.map { it.vendorId.toString() + ":" + it.productId.toString() }.toSet()
+                  } catch (e: Exception) {
+                      emptySet()
+                  }
+              }
+
+              private fun build() {
+                  root.removeAllViews()
+                  val sv = ScrollView(act)
+                  val col = LinearLayout(act)
+                  col.orientation = LinearLayout.VERTICAL
+                  col.setPadding(ui.dp(32), ui.dp(24), ui.dp(32), ui.dp(24))
+
+                  val head = LinearLayout(act)
+                  head.orientation = LinearLayout.HORIZONTAL
+                  head.gravity = Gravity.CENTER_VERTICAL
+                  head.addView(ui.tv("Devices", 28f, Pal.TEXT, true), LinearLayout.LayoutParams(0, WRAP, 1f))
+                  head.addView(ui.pill(if (showAll) "Hanya keyboard/mouse/gamepad" else "Tampilkan semua input", false) {
+                      showAll = !showAll
+                      build()
+                  }, ui.lp(WRAP, WRAP))
+                  head.addView(ui.pill("Refresh", false) { build() }, ui.lp(WRAP, WRAP, 0, 10))
+                  col.addView(head)
+
+                  val usb = usbIds()
+                  val shown = ArrayList<InputDevice>()
+                  var total = 0
+                  for (id in InputDevice.getDeviceIds()) {
+                      val d = InputDevice.getDevice(id) ?: continue
+                      total++
+                      if (showAll) {
+                          shown.add(d)
+                      } else {
+                          val k = kinds(d)
+                          if (!d.isVirtual && (k.contains("Keyboard") || k.contains("Mouse") || k.contains("Gamepad"))) shown.add(d)
+                      }
+                  }
+                  col.addView(
+                      ui.line(shown.size.toString() + " perangkat ditampilkan (" + total + " input terlihat oleh Android)", Pal.MUTED, 12f, 4)
+                  )
+
+                  if (shown.isEmpty()) {
+                      val c = ui.card()
+                      c.addView(ui.tv("Belum ada keyboard, mouse, atau gamepad terdeteksi", 15f, Pal.AMBER, true))
+                      c.addView(ui.line("Colokkan lewat OTG atau sambungkan lewat Bluetooth, daftar ini akan berubah otomatis.", Pal.TEXT, 13f, 8))
+                      col.addView(c, ui.lp(MATCH, WRAP, 16))
+                  }
+                  for (d in shown) {
+                      val c = ui.card()
+                      val k = kinds(d)
+                      c.addView(ui.tv(d.name, 16f, Pal.TEXT, true))
+                      c.addView(ui.line("Tipe: " + (if (k.isEmpty()) "lainnya" else k.joinToString(" + ")), Pal.PURPLE_LIGHT, 13f, 6))
+                      c.addView(ui.line("Status: terhubung", Pal.GREEN, 13f, 4))
+                      val viaUsb = d.vendorId != 0 && usb.contains(d.vendorId.toString() + ":" + d.productId.toString())
+                      c.addView(
+                          ui.line(
+                              "Koneksi: " + (if (viaUsb) "USB (cocok dengan perangkat USB yang terlihat)" else "tidak diketahui (bisa Bluetooth, internal, atau USB tanpa info)"),
+                              Pal.MUTED, 12f, 4
+                          )
+                      )
+                      var cap = "Sumber input: " + sourceNames(d)
+                      if (k.contains("Gamepad")) cap += " | sumbu: " + d.motionRanges.size
+                      if (k.contains("Keyboard")) cap += " | keyboard alfabet penuh"
+                      c.addView(ui.line(cap, Pal.MUTED, 12f, 4))
+                      c.addView(ui.line("ID Android: " + d.id + " | vendor:product " + d.vendorId + ":" + d.productId, Pal.MUTED, 11f, 4))
+                      col.addView(c, ui.lp(MATCH, WRAP, 12))
+                  }
+
+                  val note = ui.card()
+                  note.addView(ui.tv("Catatan", 13f, Pal.PURPLE_LIGHT, true))
+                  note.addView(
+                      ui.line(
+                          "Android tidak menyediakan jalur koneksi (USB, Bluetooth, hub) secara andal untuk semua perangkat. " +
+                              "Perangkat di balik hub USB muncul sebagai perangkat biasa, topologi hub tidak diketahui. " +
+                              "Daftar ini hanya apa yang diekspos Android; kemampuan mapper menggunakannya baru dibangun di Fase 4.",
+                          Pal.MUTED, 12f, 6
+                      )
+                  )
+                  col.addView(note, ui.lp(MATCH, WRAP, 20))
+
+                  sv.addView(col)
+                  root.addView(sv, FrameLayout.LayoutParams(MATCH, MATCH))
+              }
+          }
+          OLEOF
+          mkdir -p "$(dirname 'app/src/main/java/com/midosxq/oplx/ActivationView.kt')"
+          cat > 'app/src/main/java/com/midosxq/oplx/ActivationView.kt' <<'OLEOF'
+          package com.midosxq.oplx
+
+          import android.view.View
+          import android.widget.FrameLayout
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+
+          /** Fase 3: evaluasi jalur akses dan alur aktivasi. Hanya root yang benar-benar bisa diaktifkan. */
+          class ActivationView(private val act: MainActivity) {
+              private val ui = Ui(act)
+              private val root = FrameLayout(act)
+
+              fun view(): View {
+                  build()
+                  return root
+              }
+
+              fun rebuild() {
+                  build()
+              }
+
+              private fun build() {
+                  root.removeAllViews()
+                  val i = AccessMgr.info
+                  val activated = AccessMgr.activated(act)
+                  val sv = ScrollView(act)
+                  val col = LinearLayout(act)
+                  col.orientation = LinearLayout.VERTICAL
+                  col.setPadding(ui.dp(32), ui.dp(24), ui.dp(32), ui.dp(24))
+                  col.addView(ui.tv("Activation", 28f, Pal.TEXT, true))
+
+                  // Status ringkas
+                  val st = ui.card()
+                  st.addView(ui.tv("Status", 13f, Pal.PURPLE_LIGHT, true))
+                  if (activated && i.rootGranted) {
+                      st.addView(ui.line("Aktif: " + AccessMgr.methodLabel(i.manager), Pal.GREEN, 15f, 8))
+                      st.addView(ui.line("Mapper Service belum ada (Fase 4), jadi status service tetap STOPPED. Akses saja bukan bukti mapper berjalan.", Pal.MUTED, 12f, 6))
+                  } else if (AccessMgr.revoked) {
+                      st.addView(ui.line("Akses sebelumnya tidak lagi valid", Pal.RED, 15f, 8))
+                      st.addView(ui.line(i.rootDetail + " Aktifkan ulang lewat tombol di bawah.", Pal.TEXT, 13f, 6))
+                  } else if (AccessMgr.busy) {
+                      st.addView(ui.line("Memeriksa akses... Jika muncul permintaan dari root manager, pilih Izinkan.", Pal.AMBER, 14f, 8))
+                  } else {
+                      st.addView(ui.line("Belum diaktifkan", Pal.AMBER, 15f, 8))
+                  }
+                  col.addView(st, ui.lp(MATCH, WRAP, 16))
+
+                  // Root
+                  val rc = ui.card()
+                  rc.addView(ui.tv("Root", 16f, Pal.TEXT, true))
+                  val rootText = when (i.rootState) {
+                      AccessInfo.ROOT_GRANTED -> "Terverifikasi (uid=0)"
+                      AccessInfo.ROOT_MISSING -> "Tidak tersedia"
+                      AccessInfo.ROOT_DENIED -> "Ditolak atau tidak valid"
+                      else -> "Belum diperiksa"
+                  }
+                  val rootColor = when (i.rootState) {
+                      AccessInfo.ROOT_GRANTED -> Pal.GREEN
+                      AccessInfo.ROOT_MISSING, AccessInfo.ROOT_DENIED -> Pal.RED
+                      else -> Pal.MUTED
+                  }
+                  rc.addView(ui.line("Status: " + rootText, rootColor, 13f, 6))
+                  if (i.rootState != AccessInfo.ROOT_UNCHECKED) rc.addView(ui.line(i.rootDetail, Pal.TEXT, 13f, 4))
+                  if (i.rootGranted) {
+                      val mgr = if (i.manager == "Unknown") "Tidak dapat diidentifikasi dengan pasti (tidak ditebak)" else i.manager
+                      rc.addView(ui.line("Root manager: " + mgr, Pal.PURPLE_LIGHT, 13f, 4))
+                      rc.addView(ui.line("Label Running Method: " + AccessMgr.methodLabel(i.manager), Pal.TEXT, 13f, 4))
+                      rc.addView(ui.line("Bukti: " + i.evidence, Pal.MUTED, 11f, 4))
+                  }
+                  rc.addView(
+                      ui.line("Kemampuan: membaca perangkat input mentah dan menyuntik sentuhan (akan dipakai Mapper Service di Fase 4). Belum dipakai di versi ini.", Pal.MUTED, 12f, 6)
+                  )
+                  val btnRow = LinearLayout(act)
+                  btnRow.orientation = LinearLayout.HORIZONTAL
+                  val label = if (activated) "Periksa ulang akses root" else "Aktifkan via Root"
+                  btnRow.addView(ui.pill(label, true) { AccessMgr.activateRoot(act) }, ui.lp(WRAP, WRAP))
+                  btnRow.addView(ui.pill("Periksa ulang (tanpa root)", false) { AccessMgr.refreshPassive(act) }, ui.lp(WRAP, WRAP, 0, 10))
+                  if (activated) {
+                      btnRow.addView(ui.pill("Nonaktifkan", false) { AccessMgr.deactivate(act) }, ui.lp(WRAP, WRAP, 0, 10))
+                  }
+                  rc.addView(btnRow, ui.lp(WRAP, WRAP, 12))
+                  col.addView(rc, ui.lp(MATCH, WRAP, 16))
+
+                  // Shizuku
+                  val sc = ui.card()
+                  sc.addView(ui.tv("Shizuku API", 16f, Pal.TEXT, true))
+                  if (i.shizukuVersion != null) {
+                      sc.addView(ui.line("Aplikasi Shizuku terpasang (versi " + i.shizukuVersion + ")", Pal.GREEN, 13f, 6))
+                  } else {
+                      sc.addView(ui.line("Aplikasi Shizuku tidak terdeteksi", Pal.MUTED, 13f, 6))
+                  }
+                  sc.addView(
+                      ui.line("Integrasi izin dan layanan Shizuku belum diimplementasi, jadi route ini belum bisa dipakai untuk aktivasi. Status berjalan atau izin belum diverifikasi.", Pal.MUTED, 12f, 4)
+                  )
+                  col.addView(sc, ui.lp(MATCH, WRAP, 16))
+
+                  // ADB
+                  val ac = ui.card()
+                  ac.addView(ui.tv("ADB Activator / Wireless Debugging", 16f, Pal.TEXT, true))
+                  ac.addView(ui.line("USB debugging: " + (if (i.adbUsb) "aktif" else "mati"), if (i.adbUsb) Pal.GREEN else Pal.MUTED, 13f, 6))
+                  ac.addView(ui.line("Wireless debugging: " + (if (i.adbWifi) "aktif" else "mati"), if (i.adbWifi) Pal.GREEN else Pal.MUTED, 13f, 4))
+                  ac.addView(
+                      ui.line("Pengaturan ini hanya menunjukkan opsi sistem. Jalur aktivasi lewat ADB belum diimplementasi dan kemampuannya belum diverifikasi. Bugjaeger belum diselidiki.", Pal.MUTED, 12f, 4)
+                  )
+                  col.addView(ac, ui.lp(MATCH, WRAP, 16))
+
+                  val note = ui.card()
+                  note.addView(ui.tv("Catatan", 13f, Pal.PURPLE_LIGHT, true))
+                  note.addView(
+                      ui.line(
+                          "Setiap route punya kemampuan berbeda dan tidak dianggap setara. OpenLauncher tidak berpindah route diam-diam. " +
+                              "Status aktif disimpan, tetapi akses divalidasi ulang setiap app dibuka.",
+                          Pal.MUTED, 12f, 6
+                      )
+                  )
+                  col.addView(note, ui.lp(MATCH, WRAP, 16))
+
+                  sv.addView(col)
+                  root.addView(sv, FrameLayout.LayoutParams(MATCH, MATCH))
+              }
+          }
+          OLEOF
+          mkdir -p "$(dirname 'app/src/main/java/com/midosxq/oplx/MainActivity.kt')"
+          cat > 'app/src/main/java/com/midosxq/oplx/MainActivity.kt' <<'OLEOF'
+          package com.midosxq.oplx
+
+          import android.app.Activity
+          import android.content.Intent
+          import android.graphics.Typeface
+          import android.graphics.drawable.ColorDrawable
+          import android.graphics.drawable.StateListDrawable
+          import android.os.Build
+          import android.os.Bundle
+          import android.view.View
+          import android.view.WindowInsets
+          import android.view.WindowInsetsController
+          import android.view.WindowManager
+          import android.widget.FrameLayout
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import android.widget.Toast
+
+          class MainActivity : Activity() {
+              private lateinit var content: FrameLayout
+              private lateinit var statusText: TextView
+              private lateinit var methodText: TextView
+              private val navItems = LinkedHashMap<String, TextView>()
+              private var current = "library"
+              private lateinit var library: LibraryView
+              private lateinit var devices: DevicesView
+              private lateinit var activation: ActivationView
+              private var lastIns: WindowInsets? = null
+              private val rehide = Runnable { hideBars() }
+              var selectedGame: GameEntry? = null
+              private var pendingCoverPkg: String? = null
+
+              private val dens: Float get() = resources.displayMetrics.density
+
+              private fun dp(v: Int): Int = (v * dens).toInt()
+
+              private fun tv(t: String, sp: Float, color: Int, bold: Boolean = false): TextView {
+                  val v = TextView(this)
+                  v.text = t
+                  v.textSize = sp
+                  v.setTextColor(color)
+                  if (bold) v.typeface = Typeface.DEFAULT_BOLD
+                  return v
+              }
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  window.setDecorFitsSystemWindows(false)
+                  window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
+                  val wlp = window.attributes
+                  wlp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                  window.attributes = wlp
+                  window.setBackgroundDrawable(ColorDrawable(Pal.BG))
+
+                  val root = LinearLayout(this)
+                  root.orientation = LinearLayout.HORIZONTAL
+                  root.setBackgroundColor(Pal.BG)
+                  root.addView(buildSidebar(), LinearLayout.LayoutParams(dp(250), LinearLayout.LayoutParams.MATCH_PARENT))
+                  val sep = View(this)
+                  sep.setBackgroundColor(Pal.BORDER)
+                  root.addView(sep, LinearLayout.LayoutParams(maxOf(1, dp(1)), LinearLayout.LayoutParams.MATCH_PARENT))
+                  content = FrameLayout(this)
+                  root.addView(content, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+                  root.setOnApplyWindowInsetsListener { v, ins ->
+                      lastIns = ins
+                      val i = ins.getInsets(WindowInsets.Type.displayCutout() or WindowInsets.Type.systemBars())
+                      v.setPadding(i.left, i.top, i.right, i.bottom)
+                      if (ins.isVisible(WindowInsets.Type.statusBars()) || ins.isVisible(WindowInsets.Type.navigationBars())) {
+                          v.removeCallbacks(rehide)
+                          v.postDelayed(rehide, 1200)
+                      }
+                      ins
+                  }
+                  setContentView(root)
+                  library = LibraryView(this)
+                  devices = DevicesView(this)
+                  activation = ActivationView(this)
+                  AccessMgr.onChange = { runOnUiThread { applyAccess() } }
+                  applyAccess()
+                  AccessMgr.startup(this)
+                  show(current)
+              }
+
+              private fun applyAccess() {
+                  AccessMgr.applyStatus(this)
+                  refreshStatus()
+                  val item = navItems["activation"]
+                  if (item != null) item.visibility = if (AccessMgr.activated(this)) View.GONE else View.VISIBLE
+                  if (current == "activation") activation.rebuild()
+                  if (current == "settings") show("settings")
+              }
+
+              override fun onDestroy() {
+                  AccessMgr.onChange = null
+                  devices.stop()
+                  super.onDestroy()
+              }
+
+              private fun hideBars() {
+                  val c = window.insetsController
+                  if (c != null) {
+                      c.hide(WindowInsets.Type.systemBars())
+                      c.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                  }
+              }
+
+              override fun onWindowFocusChanged(hasFocus: Boolean) {
+                  super.onWindowFocusChanged(hasFocus)
+                  if (hasFocus) hideBars()
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  hideBars()
+              }
+
+              override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+                  super.onConfigurationChanged(newConfig)
+                  hideBars()
+                  window.decorView.requestApplyInsets()
+              }
+
+              fun openConfig(g: GameEntry) {
+                  selectedGame = g
+                  show("config")
+              }
+
+              fun pickCover(pkg: String) {
+                  pendingCoverPkg = pkg
+                  val i = Intent(Intent.ACTION_OPEN_DOCUMENT)
+                  i.addCategory(Intent.CATEGORY_OPENABLE)
+                  i.type = "image/*"
+                  try {
+                      startActivityForResult(i, 31)
+                  } catch (e: Exception) {
+                      Toast.makeText(this, "Tidak ada pemilih file gambar di perangkat ini", Toast.LENGTH_LONG).show()
+                  }
+              }
+
+              override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+                  super.onActivityResult(requestCode, resultCode, data)
+                  if (requestCode == 31 && resultCode == RESULT_OK) {
+                      val u = data?.data
+                      val p = pendingCoverPkg
+                      if (u != null && p != null) library.onCoverPicked(p, u)
+                  }
+              }
+
+              override fun onBackPressed() {
+                  if (current == "library" && library.back()) return
+                  super.onBackPressed()
+              }
+
+              private fun refreshStatus() {
+                  statusText.text = StatusModel.svc.label
+                  statusText.setTextColor(StatusModel.svc.color)
+                  methodText.text = StatusModel.method
+              }
+
+              private fun buildSidebar(): View {
+                  val col = LinearLayout(this)
+                  col.orientation = LinearLayout.VERTICAL
+                  col.setBackgroundColor(Pal.PANEL)
+                  col.setPadding(dp(16), dp(18), dp(16), dp(16))
+
+                  // Nama aplikasi (tanpa logo)
+                  val name = tv("OpenLauncher", 19f, Pal.TEXT, true)
+                  col.addView(name)
+
+                  // System Status (tepat di bawah nama, di atas navigasi)
+                  val box = LinearLayout(this)
+                  box.orientation = LinearLayout.VERTICAL
+                  box.background = rounded(Pal.CARD, 10f, dens, Pal.BORDER, 1f)
+                  box.setPadding(dp(12), dp(10), dp(12), dp(10))
+                  val row = LinearLayout(this)
+                  row.orientation = LinearLayout.HORIZONTAL
+                  val lbl = tv("SYSTEM STATUS", 10f, Pal.MUTED, true)
+                  lbl.letterSpacing = 0.08f
+                  row.addView(lbl, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                  statusText = tv("", 11f, Pal.GREY, true)
+                  row.addView(statusText)
+                  box.addView(row)
+                  val ml = tv("Running Method", 11f, Pal.MUTED)
+                  val mllp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                  mllp.topMargin = dp(8)
+                  box.addView(ml, mllp)
+                  methodText = tv("", 13f, Pal.TEXT)
+                  box.addView(methodText)
+                  val blp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                  blp.topMargin = dp(16)
+                  blp.bottomMargin = dp(14)
+                  col.addView(box, blp)
+
+                  // Navigasi (tanpa Home). Activation tampil selama aktivasi belum selesai.
+                  for (p in Pages.all) {
+                      val item = navItem(p)
+                      if (p.id == "activation" && AccessMgr.activated(this)) item.visibility = View.GONE
+                      navItems[p.id] = item
+                      col.addView(item)
+                  }
+                  return col
+              }
+
+              private fun navItem(p: Page): TextView {
+                  val t = tv(p.title, 15f, Pal.MUTED)
+                  t.setPadding(dp(14), dp(11), dp(14), dp(11))
+                  t.isFocusable = true
+                  t.isClickable = true
+                  val sld = StateListDrawable()
+                  sld.addState(intArrayOf(android.R.attr.state_selected), rounded(0, 8f, dens, Pal.PURPLE, 2f))
+                  sld.addState(intArrayOf(android.R.attr.state_hovered), rounded(0, 8f, dens, Pal.SEP, 1f))
+                  sld.addState(intArrayOf(android.R.attr.state_focused), rounded(0, 8f, dens, Pal.PURPLE, 1f))
+                  sld.addState(intArrayOf(), ColorDrawable(0))
+                  t.background = sld
+                  t.setOnClickListener { show(p.id) }
+                  val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                  lp.topMargin = dp(4)
+                  t.layoutParams = lp
+                  return t
+              }
+
+              fun show(id: String) {
+                  current = id
+                  for ((k, v) in navItems) {
+                      val sel = k == id
+                      v.isSelected = sel
+                      v.setTextColor(if (sel) Pal.TEXT else Pal.MUTED)
+                      v.typeface = if (sel) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                  }
+                  if (id == "devices") devices.start() else devices.stop()
+                  content.removeAllViews()
+                  when (id) {
+                      "library" -> content.addView(library.view())
+                      "devices" -> content.addView(devices.view())
+                      "activation" -> content.addView(activation.view())
+                      else -> content.addView(buildPage(Pages.all.first { it.id == id }))
+                  }
+              }
+
+              private fun card(): LinearLayout {
+                  val c = LinearLayout(this)
+                  c.orientation = LinearLayout.VERTICAL
+                  c.background = rounded(Pal.CARD, 12f, dens, Pal.BORDER, 1f)
+                  c.setPadding(dp(20), dp(16), dp(20), dp(16))
+                  return c
+              }
+
+              private fun lp(top: Int): LinearLayout.LayoutParams {
+                  val l = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                  l.topMargin = dp(top)
+                  return l
+              }
+
+              private fun buildPage(p: Page): View {
+                  val sv = ScrollView(this)
+                  sv.isFillViewport = true
+                  val col = LinearLayout(this)
+                  col.orientation = LinearLayout.VERTICAL
+                  col.setPadding(dp(36), dp(28), dp(36), dp(28))
+                  col.addView(tv(p.title, 28f, Pal.TEXT, true))
+
+                  val chip = tv(p.phase, 11f, Pal.PURPLE_LIGHT, true)
+                  chip.setPadding(dp(10), dp(4), dp(10), dp(4))
+                  chip.background = rounded(0, 12f, dens, Pal.PURPLE, 1f)
+                  val clp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                  clp.topMargin = dp(8)
+                  col.addView(chip, clp)
+
+                  val line = View(this)
+                  line.setBackgroundColor(Pal.SEP)
+                  col.addView(line, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, maxOf(1, dp(1))).also { it.topMargin = dp(16) })
+
+                  val plan = card()
+                  plan.addView(tv("Belum diimplementasi", 15f, Pal.AMBER, true))
+                  val sub = tv("Direncanakan sesuai spesifikasi:", 12f, Pal.MUTED)
+                  val slp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                  slp.topMargin = dp(6)
+                  plan.addView(sub, slp)
+                  for (item in p.planned) {
+                      val b = tv("\u2022  " + item, 14f, Pal.TEXT)
+                      val blp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                      blp.topMargin = dp(8)
+                      plan.addView(b, blp)
+                  }
+                  col.addView(plan, lp(20))
+
+                  if (p.id == "config") {
+                      val g = selectedGame
+                      if (g != null) col.addView(selectedCard(g), lp(16))
+                  }
+
+                  if (p.id == "settings") {
+                      col.addView(accessCard(), lp(16))
+                      col.addView(displayCard(), lp(16))
+                      col.addView(aboutCard(), lp(16))
+                  }
+                  sv.addView(col)
+                  return sv
+              }
+
+              private fun selectedCard(g: GameEntry): View {
+                  val c = card()
+                  c.addView(tv("Game dipilih", 15f, Pal.PURPLE_LIGHT, true))
+                  val type = if (Store(this).launchType(g.pkg) == "mapper") "Launch with Mapper Services" else "Launch Only"
+                  for (l in listOf(g.label, g.pkg, "Launch Type: " + type)) {
+                      val t = tv(l, 13f, Pal.TEXT)
+                      val llp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                      llp.topMargin = dp(8)
+                      c.addView(t, llp)
+                  }
+                  return c
+              }
+
+              private fun accessCard(): View {
+                  val u = Ui(this)
+                  val c = card()
+                  c.addView(tv("Akses dan Aktivasi", 15f, Pal.PURPLE_LIGHT, true))
+                  c.addView(u.line("Status service: " + StatusModel.svc.label, StatusModel.svc.color, 13f, 8))
+                  c.addView(u.line("Running Method: " + StatusModel.method, Pal.TEXT, 13f, 4))
+                  c.addView(u.pill("Buka Activation (aktivasi ulang)", false) { show("activation") }, u.lp(WRAP, WRAP, 12))
+                  return c
+              }
+
+              private fun displayCard(): View {
+                  val u = Ui(this)
+                  val c = card()
+                  c.addView(tv("Diagnostik layar (notch dan fullscreen)", 15f, Pal.PURPLE_LIGHT, true))
+                  val dm = resources.displayMetrics
+                  c.addView(
+                      u.line(
+                          "Layar: " + dm.widthPixels + " x " + dm.heightPixels + " px, density " + dm.density +
+                              " (" + (dm.widthPixels / dm.density).toInt() + " x " + (dm.heightPixels / dm.density).toInt() + " dp)",
+                          Pal.TEXT, 12f, 8
+                      )
+                  )
+                  val ins = lastIns
+                  if (ins != null) {
+                      val cut = ins.displayCutout
+                      val rects = if (cut == null) "tidak ada" else cut.boundingRects.joinToString(" ; ") { it.toShortString() }
+                      val ci = ins.getInsets(WindowInsets.Type.displayCutout())
+                      c.addView(u.line("Cutout/notch: " + rects, Pal.TEXT, 12f, 4))
+                      c.addView(u.line("Inset notch (kiri, atas, kanan, bawah): " + ci.left + ", " + ci.top + ", " + ci.right + ", " + ci.bottom + " px", Pal.TEXT, 12f, 4))
+                      val sbv = ins.isVisible(WindowInsets.Type.statusBars())
+                      val nbv = ins.isVisible(WindowInsets.Type.navigationBars())
+                      c.addView(u.line("Status bar terlihat: " + (if (sbv) "ya" else "tidak") + " | Navigation bar terlihat: " + (if (nbv) "ya" else "tidak"), if (sbv || nbv) Pal.AMBER else Pal.GREEN, 12f, 4))
+                  } else {
+                      c.addView(u.line("Data inset belum tersedia", Pal.MUTED, 12f, 4))
+                  }
+                  c.addView(u.pill("Terapkan ulang fullscreen", false) { hideBars() }, u.lp(WRAP, WRAP, 12))
+                  return c
+              }
+
+              private fun aboutCard(): View {
+                  val vn = try {
+                      packageManager.getPackageInfo(packageName, 0).versionName
+                  } catch (e: Exception) {
+                      "?"
+                  }
+                  val c = card()
+                  c.addView(tv("Tentang build ini", 15f, Pal.PURPLE_LIGHT, true))
+                  val lines = listOf(
+                      "Versi: " + vn + " (Fase 3: Aktivasi dan Devices)",
+                      "OpenLauncher melanjutkan XPlay Keymapper; mesin mapper dan perekam XPlay dimigrasikan bertahap, tidak ada yang dibuang",
+                      "Package: " + packageName,
+                      "Android: " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")",
+                      "Sudah ada: kerangka UI hitam murni dengan border ungu, sidebar, System Status, Game Library (deteksi, Add Manually, cover, detail, Launch Type), Devices, Activation (verifikasi root)",
+                      "System Status: NOT ACTIVATED atau STOPPED (akses aktif tapi Mapper Service belum ada); RUNNING baru di Fase 4",
+                      "Belum ada: Fase 4 sampai 7. Fase 3 belum diuji di HP."
+                  )
+                  for (l in lines) {
+                      val t = tv(l, 13f, Pal.TEXT)
+                      val llp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                      llp.topMargin = dp(8)
+                      c.addView(t, llp)
+                  }
+                  return c
+              }
+          }
+          OLEOF
+          mkdir -p "$(dirname 'tools/prep_assets.py')"
+          cat > 'tools/prep_assets.py' <<'OLEOF'
+          import io
+          import os
+          import sys
+          import zipfile
+          from PIL import Image, ImageDraw, ImageFilter
+
+          EXPECTED_COVERS = [
+              "bloodstrike.png", "callofduty.png", "com.rockstar.gta3.png",
+              "com.rockstargames.gtasa.png", "com.rockstargames.gtavc.png",
+              "deltaforce.png", "ff.png", "ffmax.png", "minecraft.png", "mlbb.png",
+          ]
+          MAX_ENTRY_BYTES = 64 * 1024 * 1024
+          MAX_PIXELS = 4096 * 4096
+
+
+          def fail(msg):
+              print("ERROR: " + msg)
+              sys.exit(1)
+
+
+          def cutout(im):
+              """Hapus latar putih yang tersambung ke tepi gambar (aset asli tidak diubah)."""
+              im = im.convert("RGBA")
+              w, h = im.size
+              for seed in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]:
+                  p = im.getpixel(seed)
+                  if p[0] > 200 and p[1] > 200 and p[2] > 200:
+                      ImageDraw.floodfill(im, seed, (255, 255, 255, 0), thresh=60)
+              alpha = im.getchannel("A").filter(ImageFilter.MinFilter(3))
+              im.putalpha(alpha)
+              px = im.load()
+              a = im.getchannel("A").load()
+              for y in range(1, h - 1):
+                  for x in range(1, w - 1):
+                      if a[x, y] == 0:
+                          continue
+                      near_clear = (a[x - 1, y] == 0 or a[x + 1, y] == 0 or a[x, y - 1] == 0 or a[x, y + 1] == 0)
+                      r, g, b, _ = px[x, y]
+                      if near_clear and r > 215 and g > 215 and b > 215:
+                          px[x, y] = (r, g, b, 0)
+              bbox = im.getchannel("A").getbbox()
+              if not bbox:
+                  fail("logo menjadi kosong setelah latar dihapus")
+              im = im.crop(bbox)
+              side = max(im.size)
+              sq = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+              sq.paste(im, ((side - im.width) // 2, (side - im.height) // 2))
+              return sq
+
+
+          def main():
+              if len(sys.argv) != 4:
+                  fail("pemakaian: prep_assets.py <source.zip> <res-dir> <assets-dir>")
+              zpath, res, assets_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+              if not os.path.isfile(zpath):
+                  fail("assets/source.zip tidak ditemukan di repo. Upload source.zip ke folder 'assets' di GitHub, lalu jalankan build lagi.")
+              try:
+                  z = zipfile.ZipFile(zpath)
+              except zipfile.BadZipFile:
+                  fail("assets/source.zip rusak atau bukan file ZIP.")
+
+              names = []
+              print("== Isi assets/source.zip ==")
+              for i in z.infolist():
+                  n = i.filename.replace("\\", "/")
+                  if n.startswith("/") or ".." in n.split("/"):
+                      fail("entri ZIP tidak aman (path traversal): " + i.filename)
+                  if i.file_size > MAX_ENTRY_BYTES:
+                      fail("entri ZIP terlalu besar: " + i.filename)
+                  if not i.is_dir():
+                      names.append(n)
+                      print("  %10d  %s" % (i.file_size, n))
+
+              logos = [n for n in names if n.startswith("applogo/")]
+              cursors = [n for n in names if n.startswith("cursor/")]
+              covers = [n for n in names if n.startswith("gamecover/")]
+              if len(logos) != 1:
+                  fail("folder applogo/ harus berisi tepat 1 gambar, ditemukan: %s" % logos)
+
+              print("== Pemeriksaan aset ==")
+              if len(cursors) != 1:
+                  print("PERINGATAN: folder cursor/ berisi %d file (diharapkan 1): %s" % (len(cursors), cursors))
+              else:
+                  head = z.read(cursors[0])[:4]
+                  if head == b"\x00\x00\x02\x00":
+                      print("INFO: %s sebenarnya file kursor Windows (.cur) berekstensi .png; perlu decoder khusus (Fase 6)." % cursors[0])
+                  elif head[:4] == b"\x89PNG":
+                      print("INFO: %s adalah PNG biasa." % cursors[0])
+                  else:
+                      print("PERINGATAN: format %s tidak dikenal (header %s)" % (cursors[0], head.hex()))
+              have = set(os.path.basename(c) for c in covers)
+              for c in EXPECTED_COVERS:
+                  print("  cover %-30s %s" % (c, "ADA" if c in have else "TIDAK ADA"))
+              for c in sorted(have - set(EXPECTED_COVERS)):
+                  print("  cover tidak terduga: " + c)
+
+              # Cover bawaan: hanya nama yang diharapkan, byte asli disalin apa adanya (tanpa re-encode).
+              cov_out = os.path.join(assets_dir, "covers")
+              os.makedirs(cov_out, exist_ok=True)
+              copied = 0
+              for c in EXPECTED_COVERS:
+                  entry = "gamecover/" + c
+                  if entry not in names:
+                      continue
+                  raw = z.read(entry)
+                  if raw[:8] != b"\x89PNG\r\n\x1a\n":
+                      print("PERINGATAN: %s bukan PNG valid, dilewati" % entry)
+                      continue
+                  try:
+                      cim = Image.open(io.BytesIO(raw))
+                      cim.verify()
+                  except Exception as e:
+                      print("PERINGATAN: %s rusak (%s), dilewati" % (entry, e))
+                      continue
+                  if cim.width * cim.height > MAX_PIXELS:
+                      print("PERINGATAN: %s terlalu besar, dilewati" % entry)
+                      continue
+                  with open(os.path.join(cov_out, c), "wb") as fh:
+                      fh.write(raw)
+                  copied += 1
+                  print("  cover %-30s %dx%d disalin" % (c, cim.width, cim.height))
+              print("Cover bawaan disalin: %d dari %d" % (copied, len(EXPECTED_COVERS)))
+
+              data = z.read(logos[0])
+              try:
+                  im = Image.open(io.BytesIO(data))
+                  im.load()
+              except Exception as e:
+                  fail("logo tidak bisa dibaca sebagai gambar: %s" % e)
+              if im.format not in ("JPEG", "PNG"):
+                  fail("format logo tidak didukung: %s" % im.format)
+              if im.width * im.height > MAX_PIXELS:
+                  fail("resolusi logo terlalu besar")
+              print("Logo: %s %dx%d mode=%s" % (im.format, im.width, im.height, im.mode))
+
+              logo = cutout(im)
+              out = os.path.join(res, "drawable-nodpi")
+              os.makedirs(out, exist_ok=True)
+              fg = Image.new("RGBA", (432, 432), (0, 0, 0, 0))
+              inner = logo.resize((280, 280), Image.LANCZOS)
+              fg.paste(inner, ((432 - 280) // 2, (432 - 280) // 2), inner)
+              fg.save(os.path.join(out, "ic_fg.png"))
+              print("OK: ic_fg.png (ikon aplikasi) dibuat dari applogo/ (aset asli tidak diubah).")
+
+
+          main()
+          OLEOF
+      - name: Siapkan aset dari assets/source.zip
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-pil
+          python3 proj/tools/prep_assets.py assets/source.zip proj/app/src/main/res proj/app/src/main/assets
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Build APK (debug)
+        working-directory: proj
+        run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpenLauncher-apk
+          path: proj/app/build/outputs/apk/debug/app-debug.apk
