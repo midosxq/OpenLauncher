@@ -37,6 +37,64 @@ jobs:
           set -e
           mkdir -p proj
           cd proj
+                    mkdir -p "$(dirname 'app/src/main/java/com/midosxq/oplx/RootShell.kt')"
+          cat > 'app/src/main/java/com/midosxq/oplx/RootShell.kt' <<'OLEOF'
+          package com.midosxq.oplx
+
+          import java.io.BufferedReader
+          import java.io.InputStreamReader
+          import java.io.OutputStreamWriter
+
+          class RootShell {
+              private var proc: Process? = null
+              private var out: OutputStreamWriter? = null
+              private var inp: BufferedReader? = null
+
+              @Synchronized
+              fun ensure(): Boolean {
+                  if (proc != null) return true
+                  return try {
+                      val p = ProcessBuilder("su").redirectErrorStream(true).start()
+                      proc = p
+                      out = OutputStreamWriter(p.outputStream)
+                      inp = BufferedReader(InputStreamReader(p.inputStream))
+                      true
+                  } catch (e: Exception) {
+                      proc = null
+                      false
+                  }
+              }
+
+              @Synchronized
+              fun run(cmd: String): String {
+                  if (!ensure()) return ""
+                  return try {
+                      val mark = "XPEND" + System.nanoTime()
+                      out!!.write(cmd + "\necho " + mark + "\n")
+                      out!!.flush()
+                      val sb = StringBuilder()
+                      while (true) {
+                          val l = inp!!.readLine() ?: break
+                          if (l.startsWith(mark)) break
+                          sb.append(l).append('\n')
+                      }
+                      sb.toString()
+                  } catch (e: Exception) {
+                      close()
+                      ""
+                  }
+              }
+
+              @Synchronized
+              fun close() {
+                  try { proc?.destroy() } catch (e: Exception) {}
+                  proc = null
+                  out = null
+                  inp = null
+              }
+          }
+          OLEOF
+          
           mkdir -p "$(dirname 'settings.gradle')"
           cat > 'settings.gradle' <<'OLEOF'
           pluginManagement {
