@@ -41,6 +41,8 @@ jobs:
           cat > 'app/src/main/java/com/midosxq/oplx/RootShell.kt' <<'OLEOF'
           package com.midosxq.oplx
 
+          import android.os.SystemClock
+          import android.util.Log
           import java.io.BufferedReader
           import java.io.InputStreamReader
           import java.io.OutputStreamWriter
@@ -49,6 +51,9 @@ jobs:
               private var proc: Process? = null
               private var out: OutputStreamWriter? = null
               private var inp: BufferedReader? = null
+
+              /** Alasan kegagalan terakhir (su tidak ada, su mati, timeout). Kosong bila tidak ada masalah. */
+              @Volatile var lastError: String = ""
 
               @Synchronized
               fun ensure(): Boolean {
@@ -61,22 +66,44 @@ jobs:
                       true
                   } catch (e: Exception) {
                       proc = null
+                      lastError = "su not found"
+                      Log.e("OL/Root", "cannot start su: " + e.message)
                       false
                   }
               }
 
               @Synchronized
-              fun run(cmd: String): String {
+              fun run(cmd: String, timeoutMs: Long = 8000L): String {
                   if (!ensure()) return ""
+                  val o = out
+                  val i = inp
+                  val p = proc
+                  if (o == null || i == null || p == null) return ""
                   return try {
                       val mark = "XPEND" + System.nanoTime()
-                      out!!.write(cmd + "\necho " + mark + "\n")
-                      out!!.flush()
+                      // "echo" kosong memastikan penanda selalu berada di baris sendiri.
+                      o.write(cmd + "\necho\necho " + mark + "\n")
+                      o.flush()
                       val sb = StringBuilder()
+                      val deadline = SystemClock.elapsedRealtime() + timeoutMs
                       while (true) {
-                          val l = inp!!.readLine() ?: break
-                          if (l.startsWith(mark)) break
-                          sb.append(l).append('\n')
+                          if (i.ready()) {
+                              val l = i.readLine() ?: break
+                              if (l.startsWith(mark)) break
+                              sb.append(l).append('\n')
+                          } else if (!p.isAlive) {
+                              lastError = "su exited (access denied?)"
+                              Log.w("OL/Root", "su process ended")
+                              close()
+                              break
+                          } else if (SystemClock.elapsedRealtime() > deadline) {
+                              lastError = "root command timeout"
+                              Log.w("OL/Root", "timeout")
+                              close()
+                              break
+                          } else {
+                              Thread.sleep(15)
+                          }
                       }
                       sb.toString()
                   } catch (e: Exception) {
@@ -675,8 +702,6 @@ jobs:
                   val none = L.s("Link not provided", "Tautan belum disediakan")
                   val gh = get("github")
                   out.add(Link("GitHub", if (ok(gh)) gh else null, if (ok(gh)) null else none))
-                  val yt = get("youtube")
-                  out.add(Link("YouTube", if (ok(yt)) yt else null, if (ok(yt)) null else none))
                   val dc = get("discord")
                   out.add(Link("Discord", if (ok(dc)) dc else null, if (ok(dc)) null else none))
                   val tk = get("tiktok")
@@ -883,7 +908,6 @@ jobs:
                   k.addView(ui.tv(L.s("Shortcuts", "Pintasan"), 15f, Pal.PURPLE_LIGHT, true))
                   val names = listOf(
                       "edit" to L.s("Open mapper panel", "Buka panel mapper"),
-                      "tog" to L.s("Mapper on/off", "Mapper hidup/mati"),
                       "ref" to "Cursor Refresh",
                       "ptr" to L.s("Toggle Lock Cursor", "Ganti Lock Cursor")
                   )
@@ -1454,6 +1478,24 @@ jobs:
               private var finished = false
               private val h = Handler(Looper.getMainLooper())
               private val guard = Runnable { done() }
+              private var vv: VideoView? = null
+              private var vidW = 0
+              private var vidH = 0
+
+              /** Fit: seluruh video terlihat, rasio asli terjaga, sisa ruang tetap hitam. Tidak stretch, tidak crop. */
+              private fun fit() {
+                  val v = vv ?: return
+                  if (vidW <= 0 || vidH <= 0 || width <= 0 || height <= 0) return
+                  val s = minOf(width.toFloat() / vidW, height.toFloat() / vidH)
+                  val lp = FrameLayout.LayoutParams(maxOf(1, (vidW * s).toInt()), maxOf(1, (vidH * s).toInt()))
+                  lp.gravity = Gravity.CENTER
+                  v.layoutParams = lp
+              }
+
+              override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
+                  super.onSizeChanged(w, h, ow, oh)
+                  fit()
+              }
 
               private fun done() {
                   if (finished) return
@@ -1468,14 +1510,22 @@ jobs:
                   if (resId == 0) {
                       post { done() }
                   } else {
-                      val vv = VideoView(act)
-                      vv.setVideoURI(Uri.parse("android.resource://" + act.packageName + "/" + resId))
-                      vv.setOnPreparedListener { it.isLooping = false; vv.start() }
-                      vv.setOnCompletionListener { done() }
-                      vv.setOnErrorListener { _, _, _ -> done(); true }
+                      val v = VideoView(act)
+                      vv = v
+                      v.setVideoURI(Uri.parse("android.resource://" + act.packageName + "/" + resId))
+                      v.setOnPreparedListener { mp ->
+                          mp.isLooping = false
+                          mp.setVideoScalingMode(android.media.MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT)
+                          vidW = mp.videoWidth
+                          vidH = mp.videoHeight
+                          fit()
+                          v.start()
+                      }
+                      v.setOnCompletionListener { done() }
+                      v.setOnErrorListener { _, _, _ -> done(); true }
                       val lp = FrameLayout.LayoutParams(MATCH, MATCH)
                       lp.gravity = Gravity.CENTER
-                      addView(vv, lp)
+                      addView(v, lp)
                       h.postDelayed(guard, 6500)
                   }
               }
@@ -2232,6 +2282,7 @@ jobs:
                   AccessMgr.onChange = { runOnUiThread { applyAccess() } }
                   MapperService.onChange = { runOnUiThread { applyAccess() } }
                   AccessMgr.startup(this)
+                  Xrm.verifyAsync(this)
 
                   if (!Flow.setupDone(this)) {
                       showWelcome()
@@ -2682,7 +2733,7 @@ jobs:
           /** Konfigurasi mapper per game (package name sebagai kunci) dan hotkey global. */
           object MapStore {
               const val DEF_MAPS = "JOY 0.18 0.70 0.17 17 30 31 32\nCAM 0.72 0.50\nTAP 272 0.88 0.72\nTAP 57 0.93 0.55"
-              private val DEF_HK = mapOf("edit" to "67", "tog" to "66", "ref" to "68", "ptr" to "56")
+              private val DEF_HK = mapOf("edit" to "67", "ref" to "68", "ptr" to "56")
               const val FORMAT = "OpenLauncher keymap"
 
               private fun sp(c: Context) = c.applicationContext.getSharedPreferences("ol_mapper", Context.MODE_PRIVATE)
@@ -2790,6 +2841,7 @@ jobs:
           import android.os.Looper
           import android.os.SystemClock
           import android.provider.Settings
+          import android.util.Log
           import android.view.WindowManager
           import android.widget.Toast
           import java.io.OutputStreamWriter
@@ -2801,6 +2853,7 @@ jobs:
            */
           class MapperService : Service() {
               companion object {
+                  private const val TAG = "OL/Mapper"
                   @Volatile var state = 0 // 0 berhenti, 1 berjalan, 2 error
                   @Volatile var message = ""
                   @Volatile var gamePkg = ""
@@ -2827,7 +2880,9 @@ jobs:
               @Volatile private var alive = false
               @Volatile private var fg = ""
               @Volatile private var typing = false
-              @Volatile private var enabled = true
+              @Volatile private var ready = false
+              @Volatile private var warnedEngine = false
+              private var lastHk = 0L
               @Volatile private var panelOpen = false
               @Volatile private var lastMode = ""
               @Volatile private var lastView = ""
@@ -2879,6 +2934,7 @@ jobs:
                       .addAction(Notification.Action.Builder(android.graphics.drawable.Icon.createWithResource(this, android.R.drawable.ic_delete), L.s("Stop", "Hentikan"), stopPi).build())
                       .build()
                   startForeground(1, n)
+                  Log.i(TAG, "service start, pkg=" + pkg)
 
                   if (intent?.getBooleanExtra("edit", false) == true) pendingEdit = true
                   if (running) {
@@ -2893,6 +2949,9 @@ jobs:
                   gamePkg = pkg
                   running = true
                   alive = true
+                  ready = false
+                  warnedEngine = false
+                  lastHk = 0L
                   seenGame = false
                   startedAt = SystemClock.elapsedRealtime()
                   Thread { boot() }.start()
@@ -2902,19 +2961,31 @@ jobs:
               private fun boot() {
                   setState(0, L.s("Checking root...", "Memeriksa root..."))
                   if (!shell.run("id").contains("uid=0")) {
-                      setState(2, L.s("Root access is not available. Activate root first.", "Akses root tidak tersedia. Aktifkan root dulu."))
+                      val why = if (shell.lastError.isNotEmpty()) " (" + shell.lastError + ")" else ""
+                      Log.e(TAG, "root check failed" + why)
+                      setState(2, L.s("Root access is not available. Activate root first.", "Akses root tidak tersedia. Aktifkan root dulu.") + why)
+                      toast(L.s("Mapper: root access failed", "Mapper: akses root gagal") + why)
                       stopLater()
                       return
                   }
+                  Log.i(TAG, "root verified (uid=0)")
                   shell.run("appops set " + packageName + " SYSTEM_ALERT_WINDOW allow")
                   val lib = applicationInfo.nativeLibraryDir + "/libxeng.so"
                   shell.run("cp '" + lib + "' /data/local/tmp/ol_eng && chmod 755 /data/local/tmp/ol_eng")
+                  if (!shell.run("[ -x /data/local/tmp/ol_eng ] && echo ENGOK").contains("ENGOK")) {
+                      Log.e(TAG, "engine binary could not be prepared from " + lib)
+                      setState(2, L.s("The mapper engine could not be prepared.", "Mesin mapper tidak bisa disiapkan."))
+                      toast(L.s("Mapper: engine could not be prepared", "Mapper: mesin tidak bisa disiapkan"))
+                      stopLater()
+                      return
+                  }
                   try {
                       val p = ProcessBuilder("su").redirectErrorStream(true).start()
                       engine = p
                       eout = OutputStreamWriter(p.outputStream)
                       send("exec /data/local/tmp/ol_eng")
                   } catch (e: Exception) {
+                      Log.e(TAG, "engine start failed: " + e.message)
                       setState(2, L.s("Engine failed to start: ", "Engine gagal dimulai: ") + e.message)
                       stopLater()
                       return
@@ -2929,6 +3000,7 @@ jobs:
                       } catch (e: Exception) {
                       }
                       if (alive) {
+                          Log.e(TAG, "engine output ended unexpectedly")
                           setState(2, L.s("The engine stopped unexpectedly.", "Engine berhenti tiba-tiba."))
                           stopLater()
                       }
@@ -2968,7 +3040,7 @@ jobs:
                   for (l in MapStore.maps(this, gamePkg).split("\n")) if (l.isNotBlank()) send(l.trim())
                   sendSens()
                   send("LOCK " + (if (MapStore.lock(this, gamePkg)) 1 else 0))
-                  for (n in listOf("edit", "tog", "ref", "ptr")) send("HK " + n + " " + MapStore.hk(this, n).replace(',', ' '))
+                  for (n in listOf("edit", "ref", "ptr")) send("HK " + n + " " + MapStore.hk(this, n).replace(',', ' '))
                   lastMode = ""
                   lastView = ""
               }
@@ -2982,19 +3054,20 @@ jobs:
                   val p = l.split(" ")
                   if (p.size < 2 || p[0] != "EV") return
                   when (p[1]) {
-                      "READY" -> setState(1, "")
+                      "READY" -> {
+                          ready = true
+                          Log.i(TAG, "engine ready")
+                          setState(1, "")
+                      }
                       "DEV" -> if (p.size >= 5) {
                           devK = p[2].toIntOrNull() ?: 0
                           devM = p[3].toIntOrNull() ?: 0
                           devP = p[4].toIntOrNull() ?: 0
+                          Log.i(TAG, "devices kbd=" + devK + " mouse=" + devM + " pad=" + devP)
                       }
                       "HK" -> if (p.size >= 3) {
                           when (p[2]) {
-                              "edit" -> main.post { if (fg == gamePkg) togglePanel() }
-                              "tog" -> {
-                                  enabled = !enabled
-                                  toast(if (enabled) L.s("Mapper ON", "Mapper AKTIF") else L.s("Mapper OFF", "Mapper MATI"))
-                              }
+                              "edit" -> main.post { onEditHotkey() }
                           }
                       }
                       "REFRESHED" -> toast(L.s("Cursor refreshed", "Cursor di-refresh"))
@@ -3043,7 +3116,17 @@ jobs:
                           }
                       }
                   }
-                  if (pkg.isNotEmpty()) fg = pkg
+                  if (pkg.isEmpty()) {
+                      val o2 = shell.run("dumpsys activity activities | grep -E 'topResumedActivity|mResumedActivity'")
+                      for (l in o2.split("\n")) {
+                          val m = rx.find(l)
+                          if (m != null) { pkg = m.groupValues[1]; break }
+                      }
+                  }
+                  if (pkg.isNotEmpty()) {
+                      if (pkg != fg) Log.d(TAG, "foreground app: " + pkg)
+                      fg = pkg
+                  }
                   typing = out.contains("mInputShown=true") || out.contains("mShowRequested=true")
 
                   val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -3057,6 +3140,12 @@ jobs:
                   }
 
                   val now = SystemClock.elapsedRealtime()
+                  if (!ready && !warnedEngine && now - startedAt > 8000L) {
+                      warnedEngine = true
+                      Log.e(TAG, "engine did not report READY within 8s")
+                      setState(2, L.s("The mapper engine did not respond.", "Mesin mapper tidak merespons."))
+                      toast(L.s("Mapper: the engine did not respond", "Mapper: mesin tidak merespons"))
+                  }
                   val inGame = fg == gamePkg
                   if (inGame) {
                       seenGame = true
@@ -3067,7 +3156,7 @@ jobs:
                       }
                   }
                   val mode = when {
-                      panelOpen || !enabled || !inGame -> "O"
+                      panelOpen || !inGame -> "O"
                       typing -> "T"
                       else -> "G"
                   }
@@ -3092,7 +3181,8 @@ jobs:
                       return
                   }
                   if (!Settings.canDrawOverlays(this)) {
-                      toast(L.s("Overlay permission is missing", "Izin tampil di atas app lain belum ada"))
+                      Log.w(TAG, "overlay permission missing")
+                      toast(L.s("Overlay permission is missing. Enable \"Display over other apps\" for OpenLauncher.", "Izin tampil di atas app lain belum ada. Aktifkan \"Tampil di atas app lain\" untuk OpenLauncher."))
                       return
                   }
                   var label = gamePkg
@@ -3110,10 +3200,28 @@ jobs:
                   if (!np.showing) {
                       panelOpen = false
                       lastMode = ""
+                      Log.e(TAG, "panel could not be shown: " + np.error)
+                      toast(L.s("The mapper panel could not be shown: ", "Panel mapper tidak bisa ditampilkan: ") + np.error)
+                  } else {
+                      Log.i(TAG, "panel shown")
                   }
               }
 
+              /** Shortcut buka panel dari engine. Debounce supaya tidak toggle berulang. */
+              private fun onEditHotkey() {
+                  val now = SystemClock.elapsedRealtime()
+                  if (now - lastHk < 350L) return
+                  lastHk = now
+                  Log.i(TAG, "open-panel shortcut received, foreground=" + fg)
+                  if (fg.isNotEmpty() && fg != gamePkg) {
+                      toast(L.s("Open the game first, then press the shortcut.", "Buka game dulu, lalu tekan shortcut."))
+                      return
+                  }
+                  togglePanel()
+              }
+
               override fun onDestroy() {
+                  Log.i(TAG, "service stop")
                   alive = false
                   running = false
                   try { send("QUIT") } catch (e: Exception) {}
@@ -3254,6 +3362,7 @@ jobs:
               private var hint: TextView? = null
 
               val showing: Boolean get() = panel != null
+              @Volatile var error: String = ""
 
               private fun load() {
                   list.clear()
@@ -3356,6 +3465,8 @@ jobs:
                   try {
                       wm.addView(p, lp)
                   } catch (e: Exception) {
+                      error = e.javaClass.simpleName + (if (e.message != null) ": " + e.message else "")
+                      android.util.Log.w("OL/Mapper", "overlay addView failed: " + error)
                       panel = null
                       return
                   }
@@ -4051,20 +4162,19 @@ jobs:
                   last = now
                   val w = width.toFloat()
                   val h = height.toFloat()
-                  for (band in 0..1) {
-                      for (k in 0..4) {
-                          val base = if (band == 0) h * 0.10f + k * 9f * dens else h * 0.90f - k * 9f * dens
-                          val amp = (14f + k * 5f) * dens
-                          p.alpha = 170 - k * 30
-                          path.reset()
-                          var x = 0f
-                          while (x <= w) {
-                              val y = base + amp * Math.sin((x / w * 4.2 + phase * (1.0 + k * 0.15) + k * 0.7 + band * 2.0)).toFloat()
-                              if (x == 0f) path.moveTo(x, y) else path.lineTo(x, y)
-                              x += 14f * dens
-                          }
-                          c.drawPath(path, p)
+                  // Satu Purple Wave saja (lima garis rapat), di bagian bawah layar.
+                  for (k in 0..4) {
+                      val base = h * 0.88f - k * 9f * dens
+                      val amp = (14f + k * 5f) * dens
+                      p.alpha = 170 - k * 30
+                      path.reset()
+                      var x = 0f
+                      while (x <= w) {
+                          val y = base + amp * Math.sin((x / w * 4.2 + phase * (1.0 + k * 0.15) + k * 0.7)).toFloat()
+                          if (x == 0f) path.moveTo(x, y) else path.lineTo(x, y)
+                          x += 14f * dens
                       }
+                      c.drawPath(path, p)
                   }
                   if (running) postInvalidateDelayed(step)
               }
@@ -4101,6 +4211,157 @@ jobs:
                   for (i in 0 until n) {
                       val d = spd[i] * t * dens
                       c.drawCircle(cx + Math.cos(ang[i].toDouble()).toFloat() * d, cy + Math.sin(ang[i].toDouble()).toFloat() * d, (3f * (1f - t) + 1f) * dens, paint)
+                  }
+              }
+          }
+          OLEOF
+          mkdir -p "$(dirname 'app/src/main/java/com/midosxq/oplx/Xrm.kt')"
+          cat > 'app/src/main/java/com/midosxq/oplx/Xrm.kt' <<'OLEOF'
+          package com.midosxq.oplx
+
+          import android.app.Activity
+          import android.app.AlertDialog
+          import android.content.Context
+          import android.content.pm.PackageManager
+          import android.os.Handler
+          import android.os.Looper
+          import android.util.Log
+          import java.io.InputStream
+          import java.security.MessageDigest
+
+          /**
+           * XRM (Xtreme Resource Modifier): pemeriksaan integritas, sepenuhnya offline.
+           *
+           * Yang diperiksa:
+           *  1. Aset di assets/ dan res/raw (termasuk video intro) dibandingkan dengan daftar SHA-256 yang dibuat saat build
+           *     (assets/xrm/manifest.txt).
+           *  2. Sertifikat penanda tangan APK dicatat pada peluncuran pertama; bila berubah pada instalasi yang sama, ditandai.
+           *
+           * Batas yang jujur: ini mendeteksi perubahan biasa dan APK yang dipasang ulang dengan tanda tangan lain.
+           * Ini BUKAN perlindungan 100% terhadap reverse engineering atau repackaging oleh orang yang menguasai Android:
+           * daftar hash ikut berada di dalam APK, jadi penyerang yang teliti bisa memperbaruinya.
+           * Aset belum dienkripsi. Kegagalan verifikasi (bukan ketidakcocokan) hanya dicatat di log, tanpa peringatan palsu.
+           * Tidak ada akses jaringan, tidak ada data pengguna yang dihapus, dan pengguna tetap bisa melanjutkan.
+           */
+          object Xrm {
+              private const val TAG = "OL/XRM"
+              const val ALERT_TITLE = "OpenLauncher Security Alert \u2014 APK Integrity Check Failed"
+
+              @Volatile private var started = false
+              @Volatile var failed: List<String>? = null
+                  private set
+
+              /** Dijalankan sekali per proses, di thread terpisah; hasil disimpan selama proses berjalan. */
+              fun verifyAsync(act: Activity) {
+                  if (started) return
+                  started = true
+                  Thread {
+                      val bad = try {
+                          runChecks(act.applicationContext)
+                      } catch (e: Throwable) {
+                          Log.w(TAG, "verification could not run: " + e)
+                          null
+                      }
+                      if (bad != null && bad.isNotEmpty()) {
+                          failed = bad
+                          Log.w(TAG, "integrity check failed: " + bad.joinToString(","))
+                          Handler(Looper.getMainLooper()).post { if (!act.isFinishing) alert(act) }
+                      } else if (bad != null) {
+                          Log.i(TAG, "integrity check passed")
+                      }
+                  }.start()
+              }
+
+              private fun hex(b: ByteArray): String {
+                  val sb = StringBuilder()
+                  for (x in b) sb.append(String.format("%02x", x.toInt() and 0xff))
+                  return sb.toString()
+              }
+
+              private fun sha256(ins: InputStream): String {
+                  val md = MessageDigest.getInstance("SHA-256")
+                  val buf = ByteArray(16384)
+                  ins.use {
+                      while (true) {
+                          val n = it.read(buf)
+                          if (n < 0) break
+                          md.update(buf, 0, n)
+                      }
+                  }
+                  return hex(md.digest())
+              }
+
+              private fun signerHash(c: Context): String? {
+                  val pi = c.packageManager.getPackageInfo(c.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+                  val signers = pi.signingInfo?.apkContentsSigners ?: return null
+                  if (signers.isEmpty()) return null
+                  val md = MessageDigest.getInstance("SHA-256")
+                  for (s in signers) md.update(s.toByteArray())
+                  return hex(md.digest())
+              }
+
+              private fun open(c: Context, name: String): InputStream? {
+                  if (name.startsWith("raw/")) {
+                      val base = name.substring(4).substringBeforeLast('.')
+                      val id = c.resources.getIdentifier(base, "raw", c.packageName)
+                      return if (id == 0) null else c.resources.openRawResource(id)
+                  }
+                  return c.assets.open(name)
+              }
+
+              /** Mengembalikan daftar item yang tidak cocok (kosong = lolos). */
+              private fun runChecks(c: Context): List<String> {
+                  val bad = ArrayList<String>()
+
+                  val sig = signerHash(c)
+                  if (sig != null) {
+                      val sp = c.getSharedPreferences("ol_xrm", Context.MODE_PRIVATE)
+                      val saved = sp.getString("signer", null)
+                      if (saved == null) sp.edit().putString("signer", sig).apply()
+                      else if (saved != sig) bad.add("signer")
+                  }
+
+                  val mf = try {
+                      c.assets.open("xrm/manifest.txt").bufferedReader().use { it.readText() }
+                  } catch (e: Exception) {
+                      null
+                  }
+                  if (mf == null) {
+                      bad.add("manifest")
+                      return bad
+                  }
+                  for (raw in mf.split("\n")) {
+                      val l = raw.trim()
+                      if (l.length < 67 || l[64] != ' ') continue
+                      val want = l.substring(0, 64)
+                      val name = l.substring(66)
+                      val got = try {
+                          val s = open(c, name)
+                          if (s == null) null else sha256(s)
+                      } catch (e: Exception) {
+                          null
+                      }
+                      if (got == null || got != want) bad.add(name)
+                  }
+                  return bad
+              }
+
+              private fun alert(act: Activity) {
+                  try {
+                      AlertDialog.Builder(act)
+                          .setTitle(ALERT_TITLE)
+                          .setMessage(
+                              L.s(
+                                  "An integrity check failed. Some app files do not match what was expected. This copy may not be an original, unmodified build, or the files may be damaged. Your data was not touched. If you did not modify the app yourself, reinstall OpenLauncher from a source you trust.",
+                                  "Pemeriksaan integritas gagal. Sebagian file aplikasi tidak sesuai dengan yang diharapkan. Salinan ini mungkin bukan build asli yang belum diubah, atau filenya rusak. Datamu tidak disentuh. Jika kamu tidak mengubah aplikasi ini sendiri, pasang ulang OpenLauncher dari sumber yang kamu percaya."
+                              )
+                          )
+                          .setCancelable(false)
+                          .setPositiveButton(L.s("Continue", "Lanjut")) { d, _ -> d.dismiss() }
+                          .setNegativeButton(L.s("Close app", "Tutup app")) { _, _ -> act.finishAffinity() }
+                          .show()
+                  } catch (e: Exception) {
+                      Log.w(TAG, "alert could not be shown: " + e)
                   }
               }
           }
@@ -4855,7 +5116,34 @@ jobs:
               convert_cursor(z, names_cursor=cursors, assets_dir=assets_dir)
 
 
+          def write_xrm_manifest(res_dir, assets_dir):
+              """XRM: daftar SHA-256 aset (assets/ dan res/raw) yang diperiksa aplikasi saat berjalan, offline."""
+              import hashlib
+              entries = []
+              for root, _dirs, files in os.walk(assets_dir):
+                  for f in files:
+                      p = os.path.join(root, f)
+                      rel = os.path.relpath(p, assets_dir).replace(os.sep, "/")
+                      if rel.startswith("xrm/"):
+                          continue
+                      entries.append((rel, p))
+              raw = os.path.join(res_dir, "raw")
+              if os.path.isdir(raw):
+                  for f in os.listdir(raw):
+                      entries.append(("raw/" + f, os.path.join(raw, f)))
+              lines = []
+              for rel, p in sorted(entries):
+                  with open(p, "rb") as fh:
+                      lines.append(hashlib.sha256(fh.read()).hexdigest() + "  " + rel)
+              out = os.path.join(assets_dir, "xrm")
+              os.makedirs(out, exist_ok=True)
+              with open(os.path.join(out, "manifest.txt"), "w") as fh:
+                  fh.write("\n".join(lines) + "\n")
+              print("XRM manifest: %d entri" % len(lines))
+
+
           main()
+          write_xrm_manifest(sys.argv[2], sys.argv[3])
           OLEOF
 
       - name: Prepare assets (source.zip, branding.zip)
