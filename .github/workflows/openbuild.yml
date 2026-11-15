@@ -4727,7 +4727,7 @@ jobs:
           }
           static void cam_apply(int dx, int dy) {
               int i;
-              /* Tombol tembak (tap tombol mouse) sedang ditahan: gerakan mouse menggeser jari tembak, jari kamera dibiarkan diam di tempatnya. */
+              /* Tombol tembak (tap tombol mouse) sedang ditahan: jari tembak ikut digeser mouse, dan jari kamera tetap ikut bergerak juga. */
               for (i = 0; i < nmap; i++) {
                   Map *f = &maps[i];
                   if (f->type == M_TAP && f->down && f->drag) {
@@ -4736,7 +4736,7 @@ jobs:
                       if (f->fu < 0.01) f->fu = 0.01; if (f->fu > 0.99) f->fu = 0.99;
                       if (f->fv < 0.01) f->fv = 0.01; if (f->fv > 0.99) f->fv = 0.99;
                       tmove(f->slot, f->fu, f->fv);
-                      return;
+                      break;
                   }
               }
               for (i = 0; i < nmap; i++) {
@@ -4745,12 +4745,10 @@ jobs:
                   if (!m->down) { cam_u = m->u; cam_v = m->v; tdown(m->slot, cam_u, cam_v); m->down = 1; }
                   cam_u += dx * sensx * 0.1 / vw;
                   cam_v += dy * sensy * 0.1 / vh;
-                  if (cam_u < 0.04 || cam_u > 0.96 || cam_v < 0.04 || cam_v > 0.96) {
-                      /* mentok di tepi layar: angkat dan pasang lagi di titik awal saat itu juga, lalu lanjut swipe */
-                      tup(m->slot);
-                      cam_u = m->u; cam_v = m->v;
-                      tdown(m->slot, cam_u, cam_v);
-                  } else tmove(m->slot, cam_u, cam_v);
+                  /* tanpa batas area: jari tidak pernah dipasang ulang otomatis; hanya berhenti di tepi layar (margin kecil agar tidak memicu gesture tepi sistem) sampai Reset View */
+                  if (cam_u < 0.015) cam_u = 0.015; if (cam_u > 0.985) cam_u = 0.985;
+                  if (cam_v < 0.015) cam_v = 0.015; if (cam_v > 0.985) cam_v = 0.985;
+                  tmove(m->slot, cam_u, cam_v);
                   cam_last = now_ms();
                   break;
               }
