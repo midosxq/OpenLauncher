@@ -3443,7 +3443,7 @@ jobs:
            * tanpa tombol maximize, dengan tombol X bulat kecil. Dibuka lewat shortcut keyboard (bukan floating ball).
            */
           class MapperPanel(private val svc: MapperService, private val pkg: String, private val gameLabel: String, private val onClose: () -> Unit) {
-              class M(var t: String, var keys: IntArray, var u: Double, var v: Double, var r: Double)
+              class M(var t: String, var keys: IntArray, var u: Double, var v: Double, var r: Double, var h: Double = 25.0)
 
               private val ui = Ui(svc)
               private val wm = svc.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -3455,6 +3455,7 @@ jobs:
               private var boardRoot: FrameLayout? = null
               private var board: Board? = null
               private var hint: TextView? = null
+              private var rapidBox: LinearLayout? = null
 
               val showing: Boolean get() = panel != null
               @Volatile var error: String = ""
@@ -3468,7 +3469,7 @@ jobs:
                               "JOY" -> list.add(M("JOY", intArrayOf(p[4].toInt(), p[5].toInt(), p[6].toInt(), p[7].toInt()), p[1].toDouble(), p[2].toDouble(), p[3].toDouble()))
                               "CAM" -> list.add(M("CAM", IntArray(0), p[1].toDouble(), p[2].toDouble(), 0.0))
                               "TAP" -> list.add(M("TAP", intArrayOf(p[1].toInt()), p[2].toDouble(), p[3].toDouble(), 0.0))
-                              "RAPID" -> list.add(M("RAPID", intArrayOf(p[1].toInt()), p[2].toDouble(), p[3].toDouble(), p[4].toDouble()))
+                              "RAPID" -> list.add(M("RAPID", intArrayOf(p[1].toInt()), p[2].toDouble(), p[3].toDouble(), p[4].toDouble(), p.getOrNull(5)?.toDoubleOrNull() ?: 25.0))
                               "PADJOY" -> list.add(M("PADJOY", IntArray(0), p[1].toDouble(), p[2].toDouble(), p[3].toDouble()))
                               "PADCAM" -> list.add(M("PADCAM", IntArray(0), p[1].toDouble(), p[2].toDouble(), p[3].toDouble()))
                           }
@@ -3486,7 +3487,7 @@ jobs:
                           "JOY" -> sb.append("JOY ${f4(m.u)} ${f4(m.v)} ${String.format(Locale.US, "%.3f", m.r)} ${m.keys[0]} ${m.keys[1]} ${m.keys[2]} ${m.keys[3]}\n")
                           "CAM" -> sb.append("CAM ${f4(m.u)} ${f4(m.v)}\n")
                           "TAP" -> sb.append("TAP ${m.keys[0]} ${f4(m.u)} ${f4(m.v)}\n")
-                          "RAPID" -> sb.append("RAPID ${m.keys[0]} ${f4(m.u)} ${f4(m.v)} ${String.format(Locale.US, "%.1f", m.r)}\n")
+                          "RAPID" -> sb.append("RAPID ${m.keys[0]} ${f4(m.u)} ${f4(m.v)} ${String.format(Locale.US, "%.1f", m.r)} ${m.h.toInt()}\n")
                           "PADJOY" -> sb.append("PADJOY ${f4(m.u)} ${f4(m.v)} ${String.format(Locale.US, "%.3f", m.r)}\n")
                           "PADCAM" -> sb.append("PADCAM ${f4(m.u)} ${f4(m.v)} ${String.format(Locale.US, "%.2f", m.r)}\n")
                       }
@@ -3691,7 +3692,27 @@ jobs:
                   }
                   b.addView(row(addKey, addRapid, addJoy, addCam), ui.lp(WRAP, WRAP, 8))
                   b.addView(row(addPj, addPc, rm, rp), ui.lp(WRAP, WRAP, 6))
+                  val box = LinearLayout(svc)
+                  box.orientation = LinearLayout.VERTICAL
+                  rapidBox = box
+                  box.addView(ui.tv(L.s("Tap a Crazy Tap circle to set its speed and press time. Drag the dot on a joystick circle to resize it.", "Ketuk lingkaran Crazy Tap untuk atur kecepatan dan lama tekan. Geser titik di lingkaran joystick untuk mengubah ukuran."), 11f, Pal.MUTED))
+                  b.addView(box, ui.lp(MATCH, WRAP, 6))
                   b.addView(row(save, cancel), ui.lp(WRAP, WRAP, 8))
+              }
+
+              /** Pengaturan satu Crazy Tap: ketukan per detik (interval mengikuti) dan lama jari menekan. */
+              private fun showRapid(m: M) {
+                  val box = rapidBox ?: return
+                  box.removeAllViews()
+                  box.addView(ui.tv("Crazy Tap " + Keys.name(m.keys[0]), 12f, Pal.TEXT, true))
+                  box.addView(slider("", 39, (m.r.toInt() - 1).coerceIn(0, 39)) { v ->
+                      m.r = (v + 1).toDouble()
+                      L.s("Rate: ", "Kecepatan: ") + (v + 1) + L.s(" taps/s (interval ", " tap/dtk (interval ") + (1000 / (v + 1)) + " ms)"
+                  }, ui.lp(MATCH, WRAP, 4))
+                  box.addView(slider("", 195, (m.h.toInt() - 5).coerceIn(0, 195)) { v ->
+                      m.h = (v + 5).toDouble()
+                      L.s("Press time: ", "Lama tekan: ") + (v + 5) + " ms"
+                  }, ui.lp(MATCH, WRAP, 4))
               }
 
               private fun setHint(s: String) { hint?.text = s }
@@ -3749,6 +3770,8 @@ jobs:
                   private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
                   private val stroke = Paint(Paint.ANTI_ALIAS_FLAG)
                   private val txt = Paint(Paint.ANTI_ALIAS_FLAG)
+                  private val handle = Paint(Paint.ANTI_ALIAS_FLAG)
+                  private var resizing: M? = null
                   private var drag: M? = null
                   private var sx = 0f
                   private var sy = 0f
@@ -3767,6 +3790,7 @@ jobs:
                       stroke.style = Paint.Style.STROKE
                       stroke.strokeWidth = 3 * ui.dens
                       stroke.color = Pal.PURPLE
+                      handle.color = Pal.PURPLE_LIGHT
                       txt.color = Color.WHITE
                       txt.textSize = 12 * ui.dens
                       txt.textAlign = Paint.Align.CENTER
@@ -3794,12 +3818,23 @@ jobs:
                           c.drawCircle(cx, cy, rad(m), fill)
                           c.drawCircle(cx, cy, rad(m), stroke)
                           c.drawText(label(m), cx, cy + 4 * ui.dens, txt)
+                          if (m.t == "JOY" || m.t == "PADJOY") c.drawCircle(cx + rad(m), cy, 9 * ui.dens, handle)
                       }
                   }
 
                   override fun onTouchEvent(e: MotionEvent): Boolean {
                       when (e.actionMasked) {
                           MotionEvent.ACTION_DOWN -> {
+                              for (m in list) {
+                                  if (m.t != "JOY" && m.t != "PADJOY") continue
+                                  val hx = (m.u * width).toFloat() + rad(m)
+                                  val hy = (m.v * height).toFloat()
+                                  if (Math.hypot((hx - e.x).toDouble(), (hy - e.y).toDouble()) < 30 * ui.dens) {
+                                      resizing = m
+                                      drag = null
+                                      return true
+                                  }
+                              }
                               var best: M? = null
                               var bd = Float.MAX_VALUE
                               for (m in list) {
@@ -3818,6 +3853,14 @@ jobs:
                               if (best != null) uiH.postDelayed(del, 800)
                           }
                           MotionEvent.ACTION_MOVE -> {
+                              val rs = resizing
+                              if (rs != null) {
+                                  val dx = e.x - (rs.u * width).toFloat()
+                                  val dy = e.y - (rs.v * height).toFloat()
+                                  rs.r = (Math.hypot(dx.toDouble(), dy.toDouble()) / height).coerceIn(0.05, 0.40)
+                                  invalidate()
+                                  return true
+                              }
                               val m = drag
                               if (m != null) {
                                   if (Math.abs(e.x - sx) > 12 * ui.dens || Math.abs(e.y - sy) > 12 * ui.dens) {
@@ -3833,6 +3876,9 @@ jobs:
                           }
                           MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                               uiH.removeCallbacks(del)
+                              val d = drag
+                              if (resizing == null && d != null && !moved && d.t == "RAPID" && list.contains(d)) showRapid(d)
+                              resizing = null
                               drag = null
                           }
                       }
@@ -4486,7 +4532,7 @@ jobs:
           enum { M_JOY = 1, M_CAM = 2, M_TAP = 3, M_RAPID = 4, M_PADJOY = 5, M_PADCAM = 6 };
 
           typedef struct { int fd; int type; int grabbed; int num; int amin[24]; int amax[24]; int rsx, rsy, ltr, rtr; } Dev;
-          typedef struct { int type; int key[4]; double u, v, r; int slot; int down; int rf; long next; double fu, fv; int drag; } Map;
+          typedef struct { int type; int key[4]; double u, v, r; int slot; int down; int rf; long next; int hold; } Map;
           typedef struct { int n; int k[6]; } Hk;
 
           static Dev devs[MAXDEV];
@@ -4727,28 +4773,18 @@ jobs:
           }
           static void cam_apply(int dx, int dy) {
               int i;
-              /* Tombol tembak (tap tombol mouse) sedang ditahan: jari tembak ikut digeser mouse, dan jari kamera tetap ikut bergerak juga. */
-              for (i = 0; i < nmap; i++) {
-                  Map *f = &maps[i];
-                  if (f->type == M_TAP && f->down && f->drag) {
-                      f->fu += dx * sensx * 0.1 / vw;
-                      f->fv += dy * sensy * 0.1 / vh;
-                      if (f->fu < 0.01) f->fu = 0.01; if (f->fu > 0.99) f->fu = 0.99;
-                      if (f->fv < 0.01) f->fv = 0.01; if (f->fv > 0.99) f->fv = 0.99;
-                      tmove(f->slot, f->fu, f->fv);
-                      break;
-                  }
-              }
               for (i = 0; i < nmap; i++) {
                   Map *m = &maps[i];
                   if (m->type != M_CAM) continue;
                   if (!m->down) { cam_u = m->u; cam_v = m->v; tdown(m->slot, cam_u, cam_v); m->down = 1; }
                   cam_u += dx * sensx * 0.1 / vw;
                   cam_v += dy * sensy * 0.1 / vh;
-                  /* tanpa batas area: jari tidak pernah dipasang ulang otomatis; hanya berhenti di tepi layar (margin kecil agar tidak memicu gesture tepi sistem) sampai Reset View */
-                  if (cam_u < 0.015) cam_u = 0.015; if (cam_u > 0.985) cam_u = 0.985;
-                  if (cam_v < 0.015) cam_v = 0.015; if (cam_v > 0.985) cam_v = 0.985;
-                  tmove(m->slot, cam_u, cam_v);
+                  /* swipe tanpa batas: begitu jari menyentuh tepi layar, jari dipasang ulang di titik awal saat itu juga (tanpa jeda berarti) dan swipe lanjut */
+                  if (cam_u < 0.02 || cam_u > 0.98 || cam_v < 0.02 || cam_v > 0.98) {
+                      tup(m->slot);
+                      cam_u = m->u; cam_v = m->v;
+                      tdown(m->slot, cam_u, cam_v);
+                  } else tmove(m->slot, cam_u, cam_v);
                   cam_last = now_ms();
                   break;
               }
@@ -4820,12 +4856,11 @@ jobs:
           }
           /* Reset View (GGMP "Suspend Twice"): ketuk = jari kamera dilepas dan dipasang ulang + kursor berkedip di titik awal kamera. */
           static void ref_reset(void) {
-              int i, d2;
-              double bu = 0.5, bv = 0.5;
+              int d2;
               release_all(); cam_last = 0; mdx = 0; mdy = 0;
+              pu = 0.5; pv = 0.5;
               if (mode == 1) for (d2 = 0; d2 < ndev; d2++) { grab_dev(&devs[d2], 0); grab_dev(&devs[d2], 1); }
-              for (i = 0; i < nmap; i++) if (maps[i].type == M_CAM) { bu = maps[i].u; bv = maps[i].v; break; }
-              printf("EV BLINK %.4f %.4f\n", bu, bv);
+              printf("EV BLINK 0.5000 0.5000\n");
           }
           /* Tahan: kursor muncul selama tombol ditahan, lepas = kembali ke mode kamera. */
           static void susp_start(void) {
@@ -4888,12 +4923,8 @@ jobs:
                   if (m->type == M_JOY) {
                       for (j = 0; j < 4; j++) if (m->key[j] == code) { joy_update(m); break; }
                   } else if (m->type == M_TAP && m->key[0] == code) {
-                      if (down && !m->down) {
-                          tdown(m->slot, m->u, m->v); m->down = 1;
-                          m->fu = m->u; m->fv = m->v;
-                          m->drag = (code >= 0x110 && code <= 0x117) ? 1 : 0; /* tombol mouse: jari ikut digeser mouse */
-                      }
-                      else if (!down && m->down) { tup(m->slot); m->down = 0; m->drag = 0; }
+                      if (down && !m->down) { tdown(m->slot, m->u, m->v); m->down = 1; }
+                      else if (!down && m->down) { tup(m->slot); m->down = 0; }
                   } else if (m->type == M_RAPID && m->key[0] == code) {
                       if (down) { m->down = 1; m->next = 0; }
                       else { m->down = 0; if (m->rf) { tup(m->slot); m->rf = 0; } }
@@ -4950,7 +4981,11 @@ jobs:
               else if (!strcmp(tok[0], "JOY") && n >= 8) add_map(M_JOY, atof(tok[1]), atof(tok[2]), atof(tok[3]), atoi(tok[4]), atoi(tok[5]), atoi(tok[6]), atoi(tok[7]));
               else if (!strcmp(tok[0], "CAM") && n >= 3) add_map(M_CAM, atof(tok[1]), atof(tok[2]), 0, 0, 0, 0, 0);
               else if (!strcmp(tok[0], "TAP") && n >= 4) add_map(M_TAP, atof(tok[2]), atof(tok[3]), 0, atoi(tok[1]), 0, 0, 0);
-              else if (!strcmp(tok[0], "RAPID") && n >= 5) add_map(M_RAPID, atof(tok[2]), atof(tok[3]), atof(tok[4]), atoi(tok[1]), 0, 0, 0);
+              else if (!strcmp(tok[0], "RAPID") && n >= 5) {
+                  int b4 = nmap;
+                  add_map(M_RAPID, atof(tok[2]), atof(tok[3]), atof(tok[4]), atoi(tok[1]), 0, 0, 0);
+                  if (nmap > b4 && n >= 6) maps[nmap - 1].hold = atoi(tok[5]);
+              }
               else if (!strcmp(tok[0], "PADJOY") && n >= 4) add_map(M_PADJOY, atof(tok[1]), atof(tok[2]), atof(tok[3]), 0, 0, 0, 0);
               else if (!strcmp(tok[0], "PADCAM") && n >= 4) add_map(M_PADCAM, atof(tok[1]), atof(tok[2]), atof(tok[3]), 0, 0, 0, 0);
               else if (!strcmp(tok[0], "SENS") && n >= 3) { sensx = atof(tok[1]); sensy = atof(tok[2]); if (sensx < 0) sensx = 0; if (sensy < 0) sensy = 0; if (sensx > 100) sensx = 100; if (sensy > 100) sensy = 100; }
@@ -4990,7 +5025,7 @@ jobs:
                   Map *m = &maps[i];
                   if (m->type == M_RAPID && m->down && mode == 1 && n >= m->next) {
                       double hz = m->r < 1 ? 1 : (m->r > 40 ? 40 : m->r);
-                      long period = (long)(1000.0 / hz), hold = 25;
+                      long period = (long)(1000.0 / hz), hold = m->hold >= 5 ? m->hold : 25;
                       if (period < hold + 10) period = hold + 10;
                       if (!m->rf) { tdown(m->slot, m->u, m->v); m->rf = 1; m->next = n + hold; }
                       else { tup(m->slot); m->rf = 0; m->next = n + (period - hold); }
