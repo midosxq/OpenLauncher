@@ -4543,6 +4543,7 @@ jobs:
           static double vw = 2400, vh = 1080;
           static double pw_r = 0, ph_r = 0; /* ukuran fisik panel pada orientasi sekarang; 0 = tidak diketahui */
           static long last_mv = 0;
+          static int oob = 0; /* 1 = koordinat boleh keluar layar (hanya untuk jari kamera mouse) */
           static int susp = 0, ref_held = 0; /* Reset View: susp = kursor sementara muncul (tahan), ref_held = tombol sedang ditekan */
           static long ref_t = 0;
           static int frame_ok = 0; /* frame viewport asli dari sistem (dumpsys input), pada orientasi sekarang */
@@ -4599,8 +4600,11 @@ jobs:
                   case 3: *nx = v; *ny = 1 - u; break;
                   default: *nx = u; *ny = v; break;
               }
-              if (*nx < 0) *nx = 0; if (*nx > 1) *nx = 1;
-              if (*ny < 0) *ny = 0; if (*ny > 1) *ny = 1;
+              {
+                  double lo = oob ? -500.0 : 0.0, hi = oob ? 501.0 : 1.0;
+                  if (*nx < lo) *nx = lo; if (*nx > hi) *nx = hi;
+                  if (*ny < lo) *ny = lo; if (*ny > hi) *ny = hi;
+              }
           }
           /* wm size dengan rasio beda: layar logis di-letterbox di tengah panel fisik, sedangkan koordinat sentuh mentah mencakup seluruh panel. */
           static void lbox(double *u, double *v) {
@@ -4779,12 +4783,12 @@ jobs:
                   if (!m->down) { cam_u = m->u; cam_v = m->v; tdown(m->slot, cam_u, cam_v); m->down = 1; }
                   cam_u += dx * sensx * 0.1 / vw;
                   cam_v += dy * sensy * 0.1 / vh;
-                  /* swipe tanpa batas: begitu jari menyentuh tepi layar, jari dipasang ulang di titik awal saat itu juga (tanpa jeda berarti) dan swipe lanjut */
-                  if (cam_u < 0.02 || cam_u > 0.98 || cam_v < 0.02 || cam_v > 0.98) {
-                      tup(m->slot);
-                      cam_u = m->u; cam_v = m->v;
-                      tdown(m->slot, cam_u, cam_v);
-                  } else tmove(m->slot, cam_u, cam_v);
+                  /* tanpa batas layar: jari boleh bergeser ke luar layar (kiri/kanan/atas/bawah), tidak dijepit dan tidak dipasang ulang; hanya pengaman nilai sangat jauh agar tidak overflow */
+                  if (cam_u < -500.0) cam_u = -500.0; if (cam_u > 500.0) cam_u = 500.0;
+                  if (cam_v < -500.0) cam_v = -500.0; if (cam_v > 500.0) cam_v = 500.0;
+                  oob = 1;
+                  tmove(m->slot, cam_u, cam_v);
+                  oob = 0;
                   cam_last = now_ms();
                   break;
               }
