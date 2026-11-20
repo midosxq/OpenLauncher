@@ -1094,7 +1094,8 @@ jobs:
               private val FILES = listOf(
                   "bloodstrike.png", "callofduty.png", "com.rockstar.gta3.png",
                   "com.rockstargames.gtasa.png", "com.rockstargames.gtavc.png",
-                  "deltaforce.png", "ff.png", "ffmax.png", "minecraft.png", "mlbb.png"
+                  "deltaforce.png", "ff.png", "ffmax.png", "minecraft.png", "mlbb.png",
+                  "bluearchive.png", "magic-chess-go-go.png", "pubgm.png", "pubgm-flash.png"
               )
               private val ui = Handler(Looper.getMainLooper())
               private val pool = Executors.newFixedThreadPool(2)
@@ -1119,6 +1120,10 @@ jobs:
                       l.contains("deltaforce") -> "deltaforce.png"
                       l.contains("minecraft") -> "minecraft.png"
                       l.contains("mobilelegends") -> "mlbb.png"
+                      l.contains("bluearchive") -> "bluearchive.png"
+                      l.contains("magicchess") && l.contains("gogo") -> "magic-chess-go-go.png"
+                      l.contains("pubgmobile") && l.contains("flash") -> "pubgm-flash.png"
+                      l.contains("pubgmobile") && !l.contains("lite") && !l.contains("newstate") -> "pubgm.png"
                       else -> null
                   }
               }
@@ -1324,6 +1329,147 @@ jobs:
           }
           OLEOF
           mkdir -p "$(dirname 'app/src/main/java/com/midosxq/oplx/Flow.kt')"
+          cat > 'app/src/main/java/com/midosxq/oplx/Dif.kt' <<'OLEOF'
+          package com.midosxq.oplx
+
+          import android.content.Context
+          import android.hardware.input.InputManager
+          import android.view.Gravity
+          import android.view.InputDevice
+          import android.view.MotionEvent
+          import android.view.View
+          import android.widget.LinearLayout
+          import android.widget.TextView
+
+          /**
+           * Dynamic Input Footer (DIF): petunjuk input global di kanan bawah.
+           * - Selalu tampil selama layar utama aktif. Tidak pernah disembunyikan; sentuhan layar tidak mengubah atau menutupnya.
+           * - Isinya mengikuti perangkat input yang terakhir dipakai: keyboard/mouse, gamepad PlayStation, gamepad Xbox/umum, atau sentuh.
+           * - Hanya menampilkan aksi yang benar-benar bekerja di launcher (Navigate, Select, Back).
+           */
+          class DynamicInputFooter(ctx: Context) : LinearLayout(ctx) {
+              enum class Mode { TOUCH, KBM, XBOX, PLAYSTATION }
+
+              private val ui = Ui(ctx)
+              private var mode: Mode? = null
+
+              init {
+                  orientation = HORIZONTAL
+                  gravity = Gravity.CENTER_VERTICAL
+                  background = rounded(0xE6000000.toInt(), 10f, ui.dens, Pal.SEP, 1f)
+                  setPadding(ui.dp(12), ui.dp(7), ui.dp(12), ui.dp(7))
+                  // Murni informasi: tidak menerima sentuhan dan tidak mengambil fokus navigasi.
+                  isClickable = false
+                  isFocusable = false
+                  setMode(initialMode(ctx))
+              }
+
+              private fun initialMode(ctx: Context): Mode {
+                  val im = ctx.getSystemService(Context.INPUT_SERVICE) as InputManager
+                  var kbm = false
+                  for (id in im.inputDeviceIds) {
+                      val d = im.getInputDevice(id) ?: continue
+                      if (d.isVirtual) continue
+                      val m = modeOf(d)
+                      if (m == Mode.PLAYSTATION || m == Mode.XBOX) return m
+                      if (m == Mode.KBM) kbm = true
+                  }
+                  return if (kbm) Mode.KBM else Mode.TOUCH
+              }
+
+              /** Mode untuk satu perangkat; null bila perangkat itu bukan sumber yang mengubah mode (mis. layar sentuh). */
+              private fun modeOf(d: InputDevice): Mode? {
+                  val s = d.sources
+                  val pad = (s and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
+                      (s and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
+                  if (pad) return if (isSony(d)) Mode.PLAYSTATION else Mode.XBOX
+                  if ((s and InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE) return Mode.KBM
+                  if ((s and InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD && d.keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC) return Mode.KBM
+                  return null
+              }
+
+              private fun isSony(d: InputDevice): Boolean {
+                  if (d.vendorId == 0x054c) return true
+                  val n = d.name.lowercase()
+                  return n.contains("dualshock") || n.contains("dualsense") || n.contains("playstation")
+              }
+
+              /** Dipanggil dari dispatchKeyEvent. */
+              fun onKey(d: InputDevice?) {
+                  val m = if (d == null) null else modeOf(d)
+                  if (m != null) setMode(m)
+              }
+
+              /** Dipanggil dari dispatchGenericMotionEvent: hover mouse, atau stik gamepad yang benar-benar digerakkan. */
+              fun onMotion(ev: MotionEvent) {
+                  val d = ev.device ?: return
+                  if ((ev.source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) {
+                      // Abaikan drift stik saat diam supaya mode tidak bolak-balik.
+                      val axes = intArrayOf(MotionEvent.AXIS_X, MotionEvent.AXIS_Y, MotionEvent.AXIS_Z, MotionEvent.AXIS_RZ, MotionEvent.AXIS_HAT_X, MotionEvent.AXIS_HAT_Y)
+                      var moved = false
+                      for (a in axes) if (Math.abs(ev.getAxisValue(a)) > 0.35f) moved = true
+                      if (!moved) return
+                  }
+                  val m = modeOf(d)
+                  if (m != null) setMode(m)
+              }
+
+              /** Dipanggil dari dispatchTouchEvent. Sentuhan layar diabaikan; hanya klik mouse yang mengubah mode. */
+              fun onTouch(ev: MotionEvent) {
+                  if (ev.pointerCount > 0 && ev.getToolType(0) == MotionEvent.TOOL_TYPE_MOUSE) setMode(Mode.KBM)
+              }
+
+              private fun setMode(m: Mode) {
+                  if (m == mode) return
+                  mode = m
+                  removeAllViews()
+                  when (m) {
+                      Mode.TOUCH -> {
+                          item(key("Tap"), L.s("Select", "Pilih"))
+                      }
+                      Mode.KBM -> {
+                          item(key("←↑↓→"), L.s("Navigate", "Navigasi"))
+                          item(key("Enter"), L.s("Select", "Pilih"))
+                          item(key("Esc"), L.s("Back", "Kembali"))
+                      }
+                      Mode.XBOX -> {
+                          item(key("D-pad"), L.s("Navigate", "Navigasi"))
+                          item(badge("A"), L.s("Select", "Pilih"))
+                          item(badge("B"), L.s("Back", "Kembali"))
+                      }
+                      Mode.PLAYSTATION -> {
+                          item(key("D-pad"), L.s("Navigate", "Navigasi"))
+                          item(badge("✕"), L.s("Select", "Pilih"))
+                          item(badge("○"), L.s("Back", "Kembali"))
+                      }
+                  }
+              }
+
+              private fun item(glyph: View, label: String) {
+                  val first = childCount == 0
+                  addView(glyph, ui.lp(WRAP, WRAP, 0, if (first) 0 else 14))
+                  val t = ui.tv(label, 12f, Pal.TEXT)
+                  addView(t, ui.lp(WRAP, WRAP, 0, 6))
+              }
+
+              private fun key(text: String): TextView {
+                  val t = ui.tv(text, 11f, Pal.PURPLE_LIGHT, true)
+                  t.gravity = Gravity.CENTER
+                  t.setPadding(ui.dp(7), ui.dp(2), ui.dp(7), ui.dp(2))
+                  t.background = rounded(0, 5f, ui.dens, Pal.PURPLE, 1f)
+                  return t
+              }
+
+              private fun badge(text: String): TextView {
+                  val t = ui.tv(text, 12f, Pal.TEXT, true)
+                  t.gravity = Gravity.CENTER
+                  t.minWidth = ui.dp(24)
+                  t.minHeight = ui.dp(24)
+                  t.background = rounded(0, 12f, ui.dens, Pal.PURPLE, 1.5f)
+                  return t
+              }
+          }
+          OLEOF
           cat > 'app/src/main/java/com/midosxq/oplx/Flow.kt' <<'OLEOF'
           package com.midosxq.oplx
 
@@ -1697,6 +1843,21 @@ jobs:
                       "Moonton",
                       "A 5v5 mobile MOBA. Pick a hero, push lanes with your team, and destroy the enemy base. Matches are quick and focused on teamwork and hero roles.",
                       "MOBA ponsel 5 lawan 5. Pilih hero, dorong lane bersama tim, lalu hancurkan markas lawan. Pertandingannya cepat dan menekankan kerja sama serta peran hero."
+                  ),
+                  "bluearchive.png" to Info(
+                      "NEXON Games",
+                      "A tactical role-playing game set in a futuristic academy city. You lead a team of students as their teacher, planning their positions and skills in real-time battles while following a story-driven campaign.",
+                      "Game role-playing taktis dengan latar kota akademi masa depan. Kamu memimpin tim siswa sebagai guru mereka, mengatur posisi dan skill dalam pertarungan real-time, sambil mengikuti kampanye yang digerakkan cerita."
+                  ),
+                  "magic-chess-go-go.png" to Info(
+                      "Moonton",
+                      "An auto-battler where you recruit heroes, build a team on a board, and let them fight automatically against other players. Winning comes from good team composition and smart timing rather than fast reflexes.",
+                      "Game auto-battler di mana kamu merekrut hero, menyusun tim di papan, lalu membiarkan mereka bertarung otomatis melawan pemain lain. Kemenangan datang dari susunan tim yang tepat dan waktu yang cerdas, bukan refleks cepat."
+                  ),
+                  "pubgm.png" to Info(
+                      "KRAFTON / Tencent Games",
+                      "A mobile battle royale where up to a hundred players land on a large map, scavenge weapons and gear, and fight while the safe zone shrinks until one player or squad remains.",
+                      "Battle royale ponsel di mana hingga seratus pemain mendarat di peta luas, mencari senjata dan perlengkapan, lalu bertarung saat zona aman terus menyempit hingga tersisa satu pemain atau satu skuad."
                   )
               )
 
@@ -2253,6 +2414,9 @@ jobs:
           import android.graphics.drawable.StateListDrawable
           import android.os.Build
           import android.os.Bundle
+          import android.view.Gravity
+          import android.view.KeyEvent
+          import android.view.MotionEvent
           import android.view.View
           import android.view.WindowInsets
           import android.view.WindowInsetsController
@@ -2275,6 +2439,7 @@ jobs:
               private lateinit var activation: ActivationView
               private lateinit var config: ConfigView
               private var setup: SetupView? = null
+              private var dif: DynamicInputFooter? = null
               var selectedGame: GameEntry? = null
               private var pendingCoverPkg: String? = null
               private var lastIns: WindowInsets? = null
@@ -2347,7 +2512,15 @@ jobs:
                   root.addView(sep, LinearLayout.LayoutParams(maxOf(1, ui.dp(1)), MATCH))
                   content = FrameLayout(this)
                   root.addView(content, LinearLayout.LayoutParams(0, MATCH, 1f))
-                  setRoot(root)
+                  // Dynamic Input Footer: global, kanan bawah, tidak pernah disembunyikan.
+                  val frame = FrameLayout(this)
+                  frame.addView(root, FrameLayout.LayoutParams(MATCH, MATCH))
+                  val footer = DynamicInputFooter(this)
+                  dif = footer
+                  val flp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.END)
+                  flp.setMargins(0, 0, ui.dp(16), ui.dp(12))
+                  frame.addView(footer, flp)
+                  setRoot(frame)
                   library = LibraryView(this)
                   devices = DevicesView(this)
                   activation = ActivationView(this)
@@ -2450,6 +2623,36 @@ jobs:
                       41 -> config.onExportPicked(u)
                       42 -> config.onImportPicked(u)
                   }
+              }
+
+              /** Kembali lewat Esc / tombol B gamepad. Di Game Library (halaman utama) tidak keluar dari app. */
+              private fun navBack(): Boolean {
+                  if (!mainStarted) return false
+                  return when (current) {
+                      "library" -> library.back()
+                      "about" -> { show("settings"); true }
+                      else -> { show("library"); true }
+                  }
+              }
+
+              override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+                  dif?.onKey(event.device)
+                  val k = event.keyCode
+                  if ((k == KeyEvent.KEYCODE_ESCAPE || k == KeyEvent.KEYCODE_BUTTON_B) && mainStarted) {
+                      if (event.action == KeyEvent.ACTION_UP) navBack()
+                      return true
+                  }
+                  return super.dispatchKeyEvent(event)
+              }
+
+              override fun dispatchGenericMotionEvent(ev: MotionEvent): Boolean {
+                  dif?.onMotion(ev)
+                  return super.dispatchGenericMotionEvent(ev)
+              }
+
+              override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+                  dif?.onTouch(ev)
+                  return super.dispatchTouchEvent(ev)
               }
 
               override fun onBackPressed() {
@@ -5134,6 +5337,7 @@ jobs:
               "bloodstrike.png", "callofduty.png", "com.rockstar.gta3.png",
               "com.rockstargames.gtasa.png", "com.rockstargames.gtavc.png",
               "deltaforce.png", "ff.png", "ffmax.png", "minecraft.png", "mlbb.png",
+              "bluearchive.png", "magic-chess-go-go.png", "pubgm.png", "pubgm-flash.png",
           ]
           MAX_ENTRY_BYTES = 64 * 1024 * 1024
           BRAND_MAX_TOTAL = 80 * 1024 * 1024
