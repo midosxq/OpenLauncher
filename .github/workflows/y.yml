@@ -47,7 +47,8 @@ jobs:
           import java.io.InputStreamReader
           import java.io.OutputStreamWriter
 
-          class RootShell {
+          /** Shell berprivilege yang persisten. viaShizuku = true memakai shell dari Shizuku (uid 2000 atau 0), bukan su. */
+          class RootShell(private val viaShizuku: Boolean = false) {
               private var proc: Process? = null
               private var out: OutputStreamWriter? = null
               private var inp: BufferedReader? = null
@@ -59,15 +60,21 @@ jobs:
               fun ensure(): Boolean {
                   if (proc != null) return true
                   return try {
-                      val p = ProcessBuilder("su").redirectErrorStream(true).start()
+                      val p = if (viaShizuku) (Shz.shell() ?: throw Exception("shizuku shell unavailable")) else ProcessBuilder("su").redirectErrorStream(true).start()
                       proc = p
-                      out = OutputStreamWriter(p.outputStream)
+                      val w = OutputStreamWriter(p.outputStream)
+                      out = w
                       inp = BufferedReader(InputStreamReader(p.inputStream))
+                      if (viaShizuku) {
+                          // Proses Shizuku tidak menggabungkan stderr; gabungkan di sisi shell supaya pipa tidak penuh.
+                          w.write("exec 2>&1\n")
+                          w.flush()
+                      }
                       true
                   } catch (e: Exception) {
                       proc = null
-                      lastError = "su not found"
-                      Log.e("OL/Root", "cannot start su: " + e.message)
+                      lastError = if (viaShizuku) "Shizuku shell unavailable" else "su not found"
+                      Log.e("OL/Root", "cannot start shell: " + e.message)
                       false
                   }
               }
@@ -152,6 +159,7 @@ jobs:
           cat > 'gradle.properties' <<'OLEOF'
           org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
           android.nonTransitiveRClass=true
+          android.useAndroidX=true
           org.gradle.caching=true
           org.gradle.parallel=true
           OLEOF
@@ -189,6 +197,11 @@ jobs:
                   checkReleaseBuilds false
               }
           }
+
+          dependencies {
+              implementation 'dev.rikka.shizuku:api:13.1.5'
+              implementation 'dev.rikka.shizuku:provider:13.1.5'
+          }
           OLEOF
           mkdir -p "$(dirname 'app/src/main/AndroidManifest.xml')"
           cat > 'app/src/main/AndroidManifest.xml' <<'OLEOF'
@@ -199,6 +212,10 @@ jobs:
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+              <uses-permission android:name="android.permission.RECORD_AUDIO" />
+              <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
               <application
                   android:label="OpenLauncher"
                   android:icon="@mipmap/ic_launcher"
@@ -223,6 +240,20 @@ jobs:
                           android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                           android:value="Keyboard, mouse, and gamepad mapping for the selected game" />
                   </service>
+                  <meta-data
+                      android:name="moe.shizuku.client.V3_SUPPORT"
+                      android:value="true" />
+                  <provider
+                      android:name="rikka.shizuku.ShizukuProvider"
+                      android:authorities="com.midosxq.oplx.shizuku"
+                      android:multiprocess="false"
+                      android:enabled="true"
+                      android:exported="true"
+                      android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+                  <service
+                      android:name=".HlService"
+                      android:exported="false"
+                      android:foregroundServiceType="mediaProjection|microphone" />
               </application>
           </manifest>
           OLEOF
@@ -303,6 +334,28 @@ jobs:
               private fun sp(c: Context) = c.applicationContext.getSharedPreferences("ol_access", Context.MODE_PRIVATE)
 
               fun activated(c: Context): Boolean = sp(c).getBoolean("activated", false)
+
+              /** Jalur akses yang aktif: "root" atau "shizuku". */
+              fun mode(c: Context): String = sp(c).getString("mode", "root") ?: "root"
+
+              fun viaShizuku(c: Context): Boolean = activated(c) && mode(c) == "shizuku"
+
+              /** Akses untuk jalur yang dipilih masih valid (root: uid=0 terverifikasi; Shizuku: shell uid 2000 atau 0 terverifikasi). */
+              fun accessOk(c: Context): Boolean = if (mode(c) == "shizuku") Shz.uid >= 0 else info.rootGranted
+
+              fun shizukuLabel(): String = L.s("Shizuku Mode (", "Mode Shizuku (") + (if (Shz.uid == 0) "root" else "adb") + ")"
+
+              fun currentLabel(c: Context): String = if (mode(c) == "shizuku") shizukuLabel() else methodLabel(info.manager)
+
+              /** Catatan alasan terakhir untuk jalur Shizuku (kosong bila tidak ada masalah). */
+              @Volatile var shzNote: String = ""
+
+              fun shizukuReason(c: Context): String = when {
+                  !Shz.installed(c) -> L.s("The Shizuku app is not installed.", "Aplikasi Shizuku tidak terpasang.")
+                  !Shz.running() -> L.s("Shizuku is not running. Start it from the Shizuku app, then activate again.", "Shizuku tidak berjalan. Jalankan dari aplikasi Shizuku, lalu aktifkan lagi.")
+                  !Shz.granted() -> L.s("OpenLauncher does not have Shizuku permission.", "OpenLauncher belum punya izin Shizuku.")
+                  else -> L.s("Shizuku did not return a valid shell (uid 2000 or 0).", "Shizuku tidak mengembalikan shell yang valid (uid 2000 atau 0).")
+              }
 
               fun methodLabel(manager: String): String {
                   val m = if (manager == "Unknown") L.s("Unknown", "Tidak diketahui") else manager
@@ -411,7 +464,20 @@ jobs:
                   if (busy) return
                   busy = true
                   Thread {
-                      if (activated(c)) {
+                      if (activated(c) && mode(c) == "shizuku") {
+                          Shz.waitRunning(4000)
+                          val u = Shz.verify()
+                          if (u >= 0) {
+                              revoked = false
+                              shzNote = ""
+                          } else {
+                              sp(c).edit().putBoolean("activated", false).apply()
+                              revoked = true
+                              shzNote = shizukuReason(c)
+                          }
+                          val cur = info
+                          info = passive(c, cur.rootState, cur.rootDetail, cur.manager, cur.evidence)
+                      } else if (activated(c)) {
                           val res = verifyRoot(c)
                           info = res
                           if (res.rootGranted) {
@@ -438,12 +504,39 @@ jobs:
                       val res = verifyRoot(c)
                       info = res
                       if (res.rootGranted) {
-                          sp(c).edit().putBoolean("activated", true).apply()
+                          sp(c).edit().putBoolean("activated", true).putString("mode", "root").apply()
                           revoked = false
                       }
                       busy = false
                       onChange?.invoke()
                   }.start()
+              }
+
+              /** Aktivasi lewat Shizuku (jalur non-root): minta izin, lalu verifikasi dengan menjalankan "id" lewat Shizuku. */
+              fun activateShizuku(c: Context) {
+                  if (busy) return
+                  busy = true
+                  shzNote = ""
+                  onChange?.invoke()
+                  Shz.request { ok ->
+                      if (!ok) {
+                          shzNote = shizukuReason(c)
+                          busy = false
+                          onChange?.invoke()
+                      } else {
+                          Thread {
+                              val u = Shz.verify()
+                              if (u >= 0) {
+                                  sp(c).edit().putBoolean("activated", true).putString("mode", "shizuku").apply()
+                                  revoked = false
+                              } else {
+                                  shzNote = shizukuReason(c)
+                              }
+                              busy = false
+                              onChange?.invoke()
+                          }.start()
+                      }
+                  }
               }
 
               fun deactivate(c: Context) {
@@ -456,16 +549,16 @@ jobs:
               fun applyStatus(c: Context) {
                   if (MapperService.state == 1) {
                       StatusModel.svc = Svc.RUNNING
-                      StatusModel.method = if (info.rootGranted) methodLabel(info.manager) else L.s("Root", "Root")
+                      StatusModel.method = if (mode(c) == "shizuku") shizukuLabel() else if (info.rootGranted) methodLabel(info.manager) else L.s("Root", "Root")
                   } else if (MapperService.state == 2) {
                       StatusModel.svc = Svc.ERROR
                       StatusModel.method = MapperService.message
-                  } else if (busy && activated(c) && !info.rootGranted) {
+                  } else if (busy && activated(c) && !accessOk(c)) {
                       StatusModel.svc = Svc.NOT_ACTIVATED
                       StatusModel.method = L.s("Checking access...", "Memeriksa akses...")
-                  } else if (activated(c) && info.rootGranted) {
+                  } else if (activated(c) && accessOk(c)) {
                       StatusModel.svc = Svc.STOPPED
-                      StatusModel.method = methodLabel(info.manager)
+                      StatusModel.method = currentLabel(c)
                   } else {
                       StatusModel.svc = Svc.NOT_ACTIVATED
                       StatusModel.method = L.s("Not Activated", "Belum Aktif")
@@ -509,8 +602,8 @@ jobs:
                   // Status ringkas
                   val st = ui.card()
                   st.addView(ui.tv("Status", 13f, Pal.PURPLE_LIGHT, true))
-                  if (activated && i.rootGranted) {
-                      st.addView(ui.line(L.s("Active: ", "Aktif: ") + AccessMgr.methodLabel(i.manager), Pal.GREEN, 15f, 8))
+                  if (activated && AccessMgr.accessOk(act)) {
+                      st.addView(ui.line(L.s("Active: ", "Aktif: ") + AccessMgr.currentLabel(act), Pal.GREEN, 15f, 8))
                       st.addView(
                           ui.line(
                               L.s(
@@ -521,7 +614,7 @@ jobs:
                       )
                   } else if (AccessMgr.revoked) {
                       st.addView(ui.line(L.s("Previous access is no longer valid", "Akses sebelumnya tidak lagi valid"), Pal.RED, 15f, 8))
-                      st.addView(ui.line(AccessMgr.detailText(i.rootDetail) + L.s(" Activate again with the button below.", " Aktifkan ulang lewat tombol di bawah."), Pal.TEXT, 13f, 6))
+                      st.addView(ui.line((if (AccessMgr.mode(act) == "shizuku") AccessMgr.shzNote else AccessMgr.detailText(i.rootDetail)) + L.s(" Activate again with the button below.", " Aktifkan ulang lewat tombol di bawah."), Pal.TEXT, 13f, 6))
                   } else if (AccessMgr.busy) {
                       st.addView(ui.line(L.s("Checking access... If the root manager asks, choose Allow.", "Memeriksa akses... Jika muncul permintaan dari root manager, pilih Izinkan."), Pal.AMBER, 14f, 8))
                   } else {
@@ -561,7 +654,7 @@ jobs:
                   )
                   val btnRow = LinearLayout(act)
                   btnRow.orientation = LinearLayout.HORIZONTAL
-                  val label = if (activated) L.s("Re-check root access", "Periksa ulang akses root") else L.s("Activate via Root", "Aktifkan via Root")
+                  val label = if (activated && AccessMgr.mode(act) == "root") L.s("Re-check root access", "Periksa ulang akses root") else L.s("Activate via Root", "Aktifkan via Root")
                   btnRow.addView(ui.pill(label, true) { AccessMgr.activateRoot(act) }, ui.lp(WRAP, WRAP))
                   btnRow.addView(ui.pill(L.s("Re-check (no root)", "Periksa ulang (tanpa root)"), false) { AccessMgr.refreshPassive(act) }, ui.lp(WRAP, WRAP, 0, 10))
                   if (activated) {
@@ -570,38 +663,41 @@ jobs:
                   rc.addView(btnRow, ui.lp(WRAP, WRAP, 12))
                   col.addView(rc, ui.lp(MATCH, WRAP, 16))
 
-                  // Shizuku
+                  // Shizuku (satu-satunya jalur non-root)
                   val sc = ui.card()
-                  sc.addView(ui.tv("Shizuku API", 16f, Pal.TEXT, true))
-                  if (i.shizukuVersion != null) {
-                      sc.addView(ui.line(L.s("Shizuku app installed (version ", "Aplikasi Shizuku terpasang (versi ") + i.shizukuVersion + ")", Pal.GREEN, 13f, 6))
-                  } else {
-                      sc.addView(ui.line(L.s("Shizuku app not detected", "Aplikasi Shizuku tidak terdeteksi"), Pal.MUTED, 13f, 6))
+                  sc.addView(ui.tv("Shizuku (non-root)", 16f, Pal.TEXT, true))
+                  val shzInstalled = Shz.installed(act)
+                  val shzRunning = Shz.running()
+                  val shzGranted = Shz.granted()
+                  val shzActive = activated && AccessMgr.mode(act) == "shizuku"
+                  val shzApp = if (shzInstalled) L.s("Shizuku app installed", "Aplikasi Shizuku terpasang") + (if (i.shizukuVersion != null) " (" + i.shizukuVersion + ")" else "") else L.s("Shizuku app not detected", "Aplikasi Shizuku tidak terdeteksi")
+                  sc.addView(ui.line(shzApp, if (shzInstalled) Pal.GREEN else Pal.MUTED, 13f, 6))
+                  sc.addView(ui.line(L.s("Service: ", "Layanan: ") + (if (shzRunning) L.s("running", "berjalan") else L.s("not running", "tidak berjalan")), if (shzRunning) Pal.GREEN else Pal.AMBER, 13f, 4))
+                  sc.addView(ui.line(L.s("Permission: ", "Izin: ") + (if (shzGranted) L.s("granted", "diberikan") else L.s("not granted", "belum diberikan")), if (shzGranted) Pal.GREEN else Pal.MUTED, 13f, 4))
+                  if (shzActive && Shz.uid >= 0) {
+                      sc.addView(ui.line(L.s("Verified shell: uid=", "Shell terverifikasi: uid=") + Shz.uid, Pal.GREEN, 13f, 4))
                   }
+                  if (AccessMgr.shzNote.isNotEmpty()) sc.addView(ui.line(AccessMgr.shzNote, Pal.AMBER, 12f, 6))
                   sc.addView(
                       ui.line(
                           L.s(
-                              "Shizuku permission and service integration is not implemented yet, so this route cannot be used for activation. Running state and permission are not verified.",
-                              "Integrasi izin dan layanan Shizuku belum diimplementasi, jadi route ini belum bisa dipakai untuk aktivasi. Status berjalan dan izin belum diverifikasi."
-                          ), Pal.MUTED, 12f, 4
+                              "Experimental, not tested on a device yet. Shizuku must be running (start it from the Shizuku app). Whether the mapper can read input and inject touches through Shizuku depends on your device.",
+                              "Eksperimental, belum diuji di perangkat. Shizuku harus berjalan (jalankan dari aplikasi Shizuku). Apakah mapper bisa membaca input dan menyuntik sentuhan lewat Shizuku bergantung pada perangkatmu."
+                          ), Pal.MUTED, 12f, 6
                       )
                   )
+                  val sbtn = LinearLayout(act)
+                  sbtn.orientation = LinearLayout.HORIZONTAL
+                  if (shzInstalled) {
+                      val shzLabel = if (shzActive) L.s("Re-check Shizuku access", "Periksa ulang akses Shizuku") else L.s("Activate via Shizuku", "Aktifkan via Shizuku")
+                      sbtn.addView(ui.pill(shzLabel, true) { AccessMgr.activateShizuku(act) }, ui.lp(WRAP, WRAP))
+                      sbtn.addView(ui.pill(L.s("Open Shizuku", "Buka Shizuku"), false) {
+                          val li = act.packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")
+                          if (li != null) act.startActivity(li)
+                      }, ui.lp(WRAP, WRAP, 0, 10))
+                  }
+                  sc.addView(sbtn, ui.lp(WRAP, WRAP, 12))
                   col.addView(sc, ui.lp(MATCH, WRAP, 16))
-
-                  // ADB
-                  val ac = ui.card()
-                  ac.addView(ui.tv("ADB Activator / Wireless Debugging", 16f, Pal.TEXT, true))
-                  ac.addView(ui.line("USB debugging: " + (if (i.adbUsb) L.s("on", "aktif") else L.s("off", "mati")), if (i.adbUsb) Pal.GREEN else Pal.MUTED, 13f, 6))
-                  ac.addView(ui.line("Wireless debugging: " + (if (i.adbWifi) L.s("on", "aktif") else L.s("off", "mati")), if (i.adbWifi) Pal.GREEN else Pal.MUTED, 13f, 4))
-                  ac.addView(
-                      ui.line(
-                          L.s(
-                              "These only show system options. The ADB activation route is not implemented and its capability is not verified.",
-                              "Pengaturan ini hanya menunjukkan opsi sistem. Jalur aktivasi lewat ADB belum diimplementasi dan kemampuannya belum diverifikasi."
-                          ), Pal.MUTED, 12f, 4
-                      )
-                  )
-                  col.addView(ac, ui.lp(MATCH, WRAP, 16))
 
                   val note = ui.card()
                   note.addView(ui.tv(L.s("Note", "Catatan"), 13f, Pal.PURPLE_LIGHT, true))
@@ -853,8 +949,8 @@ jobs:
                           build()
                       }, ui.lp(WRAP, WRAP, 10))
                   }
-                  val acc = if (AccessMgr.activated(act)) L.s("Access: active (", "Akses: aktif (") + AccessMgr.methodLabel(AccessMgr.info.manager) + ")"
-                  else L.s("Access: not activated. Mapper Services need root activation.", "Akses: belum aktif. Mapper Services perlu aktivasi root.")
+                  val acc = if (AccessMgr.activated(act)) L.s("Access: active (", "Akses: aktif (") + AccessMgr.currentLabel(act) + ")"
+                  else L.s("Access: not activated. Mapper Services need root or Shizuku activation.", "Akses: belum aktif. Mapper Services perlu aktivasi root atau Shizuku.")
                   h.addView(ui.line(acc, if (AccessMgr.activated(act)) Pal.GREEN else Pal.AMBER, 12f, 8))
                   h.addView(ui.line(L.s("Mapper service: ", "Mapper service: ") + (if (running) L.s("running for this game", "berjalan untuk game ini") else L.s("not running", "tidak berjalan")), if (running) Pal.GREEN else Pal.MUTED, 12f, 4))
                   col.addView(h, ui.lp(MATCH, WRAP, 14))
@@ -1121,9 +1217,9 @@ jobs:
                       l.contains("minecraft") -> "minecraft.png"
                       l.contains("mobilelegends") -> "mlbb.png"
                       l.contains("bluearchive") -> "bluearchive.png"
-                      l.contains("magicchess") && l.contains("gogo") -> "magic-chess-go-go.png"
+                      l.contains("magicchess") -> "magic-chess-go-go.png"
                       l.contains("pubgmobile") && l.contains("flash") -> "pubgm-flash.png"
-                      l.contains("pubgmobile") && !l.contains("lite") && !l.contains("newstate") -> "pubgm.png"
+                      l.contains("pubgmobile") && !l.contains("lite") -> "pubgm.png"
                       else -> null
                   }
               }
@@ -1329,147 +1425,6 @@ jobs:
           }
           OLEOF
           mkdir -p "$(dirname 'app/src/main/java/com/midosxq/oplx/Flow.kt')"
-          cat > 'app/src/main/java/com/midosxq/oplx/Dif.kt' <<'OLEOF'
-          package com.midosxq.oplx
-
-          import android.content.Context
-          import android.hardware.input.InputManager
-          import android.view.Gravity
-          import android.view.InputDevice
-          import android.view.MotionEvent
-          import android.view.View
-          import android.widget.LinearLayout
-          import android.widget.TextView
-
-          /**
-           * Dynamic Input Footer (DIF): petunjuk input global di kanan bawah.
-           * - Selalu tampil selama layar utama aktif. Tidak pernah disembunyikan; sentuhan layar tidak mengubah atau menutupnya.
-           * - Isinya mengikuti perangkat input yang terakhir dipakai: keyboard/mouse, gamepad PlayStation, gamepad Xbox/umum, atau sentuh.
-           * - Hanya menampilkan aksi yang benar-benar bekerja di launcher (Navigate, Select, Back).
-           */
-          class DynamicInputFooter(ctx: Context) : LinearLayout(ctx) {
-              enum class Mode { TOUCH, KBM, XBOX, PLAYSTATION }
-
-              private val ui = Ui(ctx)
-              private var mode: Mode? = null
-
-              init {
-                  orientation = HORIZONTAL
-                  gravity = Gravity.CENTER_VERTICAL
-                  background = rounded(0xE6000000.toInt(), 10f, ui.dens, Pal.SEP, 1f)
-                  setPadding(ui.dp(12), ui.dp(7), ui.dp(12), ui.dp(7))
-                  // Murni informasi: tidak menerima sentuhan dan tidak mengambil fokus navigasi.
-                  isClickable = false
-                  isFocusable = false
-                  setMode(initialMode(ctx))
-              }
-
-              private fun initialMode(ctx: Context): Mode {
-                  val im = ctx.getSystemService(Context.INPUT_SERVICE) as InputManager
-                  var kbm = false
-                  for (id in im.inputDeviceIds) {
-                      val d = im.getInputDevice(id) ?: continue
-                      if (d.isVirtual) continue
-                      val m = modeOf(d)
-                      if (m == Mode.PLAYSTATION || m == Mode.XBOX) return m
-                      if (m == Mode.KBM) kbm = true
-                  }
-                  return if (kbm) Mode.KBM else Mode.TOUCH
-              }
-
-              /** Mode untuk satu perangkat; null bila perangkat itu bukan sumber yang mengubah mode (mis. layar sentuh). */
-              private fun modeOf(d: InputDevice): Mode? {
-                  val s = d.sources
-                  val pad = (s and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
-                      (s and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
-                  if (pad) return if (isSony(d)) Mode.PLAYSTATION else Mode.XBOX
-                  if ((s and InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE) return Mode.KBM
-                  if ((s and InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD && d.keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC) return Mode.KBM
-                  return null
-              }
-
-              private fun isSony(d: InputDevice): Boolean {
-                  if (d.vendorId == 0x054c) return true
-                  val n = d.name.lowercase()
-                  return n.contains("dualshock") || n.contains("dualsense") || n.contains("playstation")
-              }
-
-              /** Dipanggil dari dispatchKeyEvent. */
-              fun onKey(d: InputDevice?) {
-                  val m = if (d == null) null else modeOf(d)
-                  if (m != null) setMode(m)
-              }
-
-              /** Dipanggil dari dispatchGenericMotionEvent: hover mouse, atau stik gamepad yang benar-benar digerakkan. */
-              fun onMotion(ev: MotionEvent) {
-                  val d = ev.device ?: return
-                  if ((ev.source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) {
-                      // Abaikan drift stik saat diam supaya mode tidak bolak-balik.
-                      val axes = intArrayOf(MotionEvent.AXIS_X, MotionEvent.AXIS_Y, MotionEvent.AXIS_Z, MotionEvent.AXIS_RZ, MotionEvent.AXIS_HAT_X, MotionEvent.AXIS_HAT_Y)
-                      var moved = false
-                      for (a in axes) if (Math.abs(ev.getAxisValue(a)) > 0.35f) moved = true
-                      if (!moved) return
-                  }
-                  val m = modeOf(d)
-                  if (m != null) setMode(m)
-              }
-
-              /** Dipanggil dari dispatchTouchEvent. Sentuhan layar diabaikan; hanya klik mouse yang mengubah mode. */
-              fun onTouch(ev: MotionEvent) {
-                  if (ev.pointerCount > 0 && ev.getToolType(0) == MotionEvent.TOOL_TYPE_MOUSE) setMode(Mode.KBM)
-              }
-
-              private fun setMode(m: Mode) {
-                  if (m == mode) return
-                  mode = m
-                  removeAllViews()
-                  when (m) {
-                      Mode.TOUCH -> {
-                          item(key("Tap"), L.s("Select", "Pilih"))
-                      }
-                      Mode.KBM -> {
-                          item(key("←↑↓→"), L.s("Navigate", "Navigasi"))
-                          item(key("Enter"), L.s("Select", "Pilih"))
-                          item(key("Esc"), L.s("Back", "Kembali"))
-                      }
-                      Mode.XBOX -> {
-                          item(key("D-pad"), L.s("Navigate", "Navigasi"))
-                          item(badge("A"), L.s("Select", "Pilih"))
-                          item(badge("B"), L.s("Back", "Kembali"))
-                      }
-                      Mode.PLAYSTATION -> {
-                          item(key("D-pad"), L.s("Navigate", "Navigasi"))
-                          item(badge("✕"), L.s("Select", "Pilih"))
-                          item(badge("○"), L.s("Back", "Kembali"))
-                      }
-                  }
-              }
-
-              private fun item(glyph: View, label: String) {
-                  val first = childCount == 0
-                  addView(glyph, ui.lp(WRAP, WRAP, 0, if (first) 0 else 14))
-                  val t = ui.tv(label, 12f, Pal.TEXT)
-                  addView(t, ui.lp(WRAP, WRAP, 0, 6))
-              }
-
-              private fun key(text: String): TextView {
-                  val t = ui.tv(text, 11f, Pal.PURPLE_LIGHT, true)
-                  t.gravity = Gravity.CENTER
-                  t.setPadding(ui.dp(7), ui.dp(2), ui.dp(7), ui.dp(2))
-                  t.background = rounded(0, 5f, ui.dens, Pal.PURPLE, 1f)
-                  return t
-              }
-
-              private fun badge(text: String): TextView {
-                  val t = ui.tv(text, 12f, Pal.TEXT, true)
-                  t.gravity = Gravity.CENTER
-                  t.minWidth = ui.dp(24)
-                  t.minHeight = ui.dp(24)
-                  t.background = rounded(0, 12f, ui.dens, Pal.PURPLE, 1.5f)
-                  return t
-              }
-          }
-          OLEOF
           cat > 'app/src/main/java/com/midosxq/oplx/Flow.kt' <<'OLEOF'
           package com.midosxq.oplx
 
@@ -1585,20 +1540,22 @@ jobs:
                           box.addView(
                               ui.line(
                                   L.s(
-                                      "The mapper reads keyboard, mouse, and gamepad input and sends touches to the game. In this version that needs root. You can skip this and activate later from the Activation page; Launch Only works without it.",
-                                      "Mapper membaca input keyboard, mouse, dan gamepad lalu mengirim sentuhan ke game. Di versi ini itu membutuhkan root. Boleh dilewati dan diaktifkan nanti lewat halaman Aktivasi; Luncurkan Saja tetap jalan tanpa ini."
+                                      "The mapper reads keyboard, mouse, and gamepad input and sends touches to the game. In this version that needs root or Shizuku. You can skip this and activate later from the Activation page; Launch Only works without it.",
+                                      "Mapper membaca input keyboard, mouse, dan gamepad lalu mengirim sentuhan ke game. Di versi ini itu membutuhkan root atau Shizuku. Boleh dilewati dan diaktifkan nanti lewat halaman Aktivasi; Luncurkan Saja tetap jalan tanpa ini."
                                   ), Pal.MUTED, 13f, 8
                               )
                           )
-                          val active = AccessMgr.activated(act) && i.rootGranted
+                          val active = AccessMgr.activated(act) && AccessMgr.accessOk(act)
                           val txt = when {
-                              active -> L.s("Active: ", "Aktif: ") + AccessMgr.methodLabel(i.manager)
+                              active -> L.s("Active: ", "Aktif: ") + AccessMgr.currentLabel(act)
                               AccessMgr.busy -> L.s("Checking access... allow the root request if it appears.", "Memeriksa akses... izinkan permintaan root jika muncul.")
                               i.rootState == AccessInfo.ROOT_MISSING || i.rootState == AccessInfo.ROOT_DENIED -> AccessMgr.detailText(i.rootDetail)
                               else -> L.s("Not activated yet", "Belum diaktifkan")
                           }
                           box.addView(ui.line(txt, if (active) Pal.GREEN else Pal.AMBER, 14f, 12))
                           if (!active) box.addView(ui.pill(L.s("Activate via Root", "Aktifkan via Root"), true) { AccessMgr.activateRoot(act) }, ui.lp(WRAP, WRAP, 10))
+                          if (!active && Shz.installed(act)) box.addView(ui.pill(L.s("Activate via Shizuku", "Aktifkan via Shizuku"), false) { AccessMgr.activateShizuku(act) }, ui.lp(WRAP, WRAP, 8))
+                          if (!active && AccessMgr.shzNote.isNotEmpty()) box.addView(ui.line(AccessMgr.shzNote, Pal.AMBER, 12f, 8))
                       }
                       else -> {
                           box.addView(ui.tv(L.s("All set", "Semua siap"), 22f, Pal.TEXT, true))
@@ -1843,21 +1800,6 @@ jobs:
                       "Moonton",
                       "A 5v5 mobile MOBA. Pick a hero, push lanes with your team, and destroy the enemy base. Matches are quick and focused on teamwork and hero roles.",
                       "MOBA ponsel 5 lawan 5. Pilih hero, dorong lane bersama tim, lalu hancurkan markas lawan. Pertandingannya cepat dan menekankan kerja sama serta peran hero."
-                  ),
-                  "bluearchive.png" to Info(
-                      "NEXON Games",
-                      "A tactical role-playing game set in a futuristic academy city. You lead a team of students as their teacher, planning their positions and skills in real-time battles while following a story-driven campaign.",
-                      "Game role-playing taktis dengan latar kota akademi masa depan. Kamu memimpin tim siswa sebagai guru mereka, mengatur posisi dan skill dalam pertarungan real-time, sambil mengikuti kampanye yang digerakkan cerita."
-                  ),
-                  "magic-chess-go-go.png" to Info(
-                      "Moonton",
-                      "An auto-battler where you recruit heroes, build a team on a board, and let them fight automatically against other players. Winning comes from good team composition and smart timing rather than fast reflexes.",
-                      "Game auto-battler di mana kamu merekrut hero, menyusun tim di papan, lalu membiarkan mereka bertarung otomatis melawan pemain lain. Kemenangan datang dari susunan tim yang tepat dan waktu yang cerdas, bukan refleks cepat."
-                  ),
-                  "pubgm.png" to Info(
-                      "KRAFTON / Tencent Games",
-                      "A mobile battle royale where up to a hundred players land on a large map, scavenge weapons and gear, and fight while the safe zone shrinks until one player or squad remains.",
-                      "Battle royale ponsel di mana hingga seratus pemain mendarat di peta luas, mencari senjata dan perlengkapan, lalu bertarung saat zona aman terus menyempit hingga tersisa satu pemain atau satu skuad."
                   )
               )
 
@@ -2247,8 +2189,8 @@ jobs:
                       col.addView(
                           ui.line(
                               L.s(
-                                  "Mapper Services need root activation. Open Activation to enable it; until then the game opens without the mapper.",
-                                  "Mapper Services memerlukan aktivasi root. Buka Aktivasi untuk mengaktifkannya; sampai saat itu game dibuka tanpa mapper."
+                                  "Mapper Services need root or Shizuku activation. Open Activation to enable it; until then the game opens without the mapper.",
+                                  "Mapper Services memerlukan aktivasi root atau Shizuku. Buka Aktivasi untuk mengaktifkannya; sampai saat itu game dibuka tanpa mapper."
                               ), Pal.AMBER, 12f, 8
                           )
                       )
@@ -2414,7 +2356,6 @@ jobs:
           import android.graphics.drawable.StateListDrawable
           import android.os.Build
           import android.os.Bundle
-          import android.view.Gravity
           import android.view.KeyEvent
           import android.view.MotionEvent
           import android.view.View
@@ -2438,8 +2379,9 @@ jobs:
               private lateinit var devices: DevicesView
               private lateinit var activation: ActivationView
               private lateinit var config: ConfigView
+              private lateinit var highlights: HighlightsView
+              private var dif: DifView? = null
               private var setup: SetupView? = null
-              private var dif: DynamicInputFooter? = null
               var selectedGame: GameEntry? = null
               private var pendingCoverPkg: String? = null
               private var lastIns: WindowInsets? = null
@@ -2460,6 +2402,7 @@ jobs:
                   window.setBackgroundDrawable(ColorDrawable(Pal.BG))
 
                   AccessMgr.onChange = { runOnUiThread { applyAccess() } }
+                  Shz.listen()
                   MapperService.onChange = { runOnUiThread { applyAccess() } }
                   AccessMgr.startup(this)
                   Xrm.verifyAsync(this)
@@ -2511,20 +2454,23 @@ jobs:
                   sep.setBackgroundColor(Pal.BORDER)
                   root.addView(sep, LinearLayout.LayoutParams(maxOf(1, ui.dp(1)), MATCH))
                   content = FrameLayout(this)
-                  root.addView(content, LinearLayout.LayoutParams(0, MATCH, 1f))
-                  // Dynamic Input Footer: global, kanan bawah, tidak pernah disembunyikan.
-                  val frame = FrameLayout(this)
-                  frame.addView(root, FrameLayout.LayoutParams(MATCH, MATCH))
-                  val footer = DynamicInputFooter(this)
-                  dif = footer
-                  val flp = FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.END)
-                  flp.setMargins(0, 0, ui.dp(16), ui.dp(12))
-                  frame.addView(footer, flp)
-                  setRoot(frame)
+                  // Kolom konten: halaman di atas, Dynamic Input Footer di kanan bawah (menyisakan ruang, tidak menutupi konten).
+                  val host = LinearLayout(this)
+                  host.orientation = LinearLayout.VERTICAL
+                  host.addView(content, LinearLayout.LayoutParams(MATCH, 0, 1f))
+                  val difSep = View(this)
+                  difSep.setBackgroundColor(Pal.SEP)
+                  host.addView(difSep, LinearLayout.LayoutParams(MATCH, maxOf(1, ui.dp(1))))
+                  val d = DifView(this)
+                  dif = d
+                  host.addView(d, LinearLayout.LayoutParams(MATCH, WRAP))
+                  root.addView(host, LinearLayout.LayoutParams(0, MATCH, 1f))
+                  setRoot(root)
                   library = LibraryView(this)
                   devices = DevicesView(this)
                   activation = ActivationView(this)
                   config = ConfigView(this)
+                  highlights = HighlightsView(this)
                   AccessMgr.applyStatus(this)
                   refreshStatus()
                   show(current)
@@ -2550,7 +2496,10 @@ jobs:
               override fun onDestroy() {
                   AccessMgr.onChange = null
                   MapperService.onChange = null
-                  if (mainStarted) devices.stop()
+                  if (mainStarted) {
+                      devices.stop()
+                      highlights.stop()
+                  }
                   super.onDestroy()
               }
 
@@ -2571,11 +2520,13 @@ jobs:
                   super.onResume()
                   hideBars()
                   setup?.refresh()
+                  if (mainStarted) highlights.refresh()
               }
 
               override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
                   super.onRequestPermissionsResult(requestCode, permissions, grantResults)
                   setup?.refresh()
+                  if (mainStarted) highlights.refresh()
               }
 
               override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
@@ -2613,6 +2564,10 @@ jobs:
 
               override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
                   super.onActivityResult(requestCode, resultCode, data)
+                  if (requestCode == 51) {
+                      if (mainStarted) highlights.onProjection(resultCode, data)
+                      return
+                  }
                   if (resultCode != RESULT_OK) return
                   val u = data?.data ?: return
                   when (requestCode) {
@@ -2625,34 +2580,35 @@ jobs:
                   }
               }
 
-              /** Kembali lewat Esc / tombol B gamepad. Di Game Library (halaman utama) tidak keluar dari app. */
-              private fun navBack(): Boolean {
-                  if (!mainStarted) return false
-                  return when (current) {
-                      "library" -> library.back()
-                      "about" -> { show("settings"); true }
-                      else -> { show("library"); true }
+              /**
+               * DIF: mencatat perangkat yang dipakai. Gamepad A = pilih (sama seperti D-pad center), B = kembali, Esc = kembali,
+               * supaya petunjuk di footer sesuai dengan yang benar-benar terjadi.
+               */
+              override fun dispatchKeyEvent(e: KeyEvent): Boolean {
+                  if (mainStarted) {
+                      dif?.noteKey(e)
+                      when (e.keyCode) {
+                          KeyEvent.KEYCODE_BUTTON_A -> {
+                              val c = KeyEvent(e.downTime, e.eventTime, e.action, KeyEvent.KEYCODE_DPAD_CENTER, e.repeatCount, e.metaState, e.deviceId, e.scanCode, e.flags, e.source)
+                              return super.dispatchKeyEvent(c)
+                          }
+                          KeyEvent.KEYCODE_BUTTON_B, KeyEvent.KEYCODE_ESCAPE -> {
+                              if (e.action == KeyEvent.ACTION_UP) onBackPressed()
+                              return true
+                          }
+                      }
                   }
+                  return super.dispatchKeyEvent(e)
               }
 
-              override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-                  dif?.onKey(event.device)
-                  val k = event.keyCode
-                  if ((k == KeyEvent.KEYCODE_ESCAPE || k == KeyEvent.KEYCODE_BUTTON_B) && mainStarted) {
-                      if (event.action == KeyEvent.ACTION_UP) navBack()
-                      return true
-                  }
-                  return super.dispatchKeyEvent(event)
+              override fun dispatchGenericMotionEvent(e: MotionEvent): Boolean {
+                  if (mainStarted) dif?.noteMotion(e)
+                  return super.dispatchGenericMotionEvent(e)
               }
 
-              override fun dispatchGenericMotionEvent(ev: MotionEvent): Boolean {
-                  dif?.onMotion(ev)
-                  return super.dispatchGenericMotionEvent(ev)
-              }
-
-              override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-                  dif?.onTouch(ev)
-                  return super.dispatchTouchEvent(ev)
+              override fun dispatchTouchEvent(e: MotionEvent): Boolean {
+                  if (mainStarted && e.actionMasked == MotionEvent.ACTION_DOWN) dif?.noteMotion(e)
+                  return super.dispatchTouchEvent(e)
               }
 
               override fun onBackPressed() {
@@ -2735,12 +2691,14 @@ jobs:
                       v.typeface = if (sel) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
                   }
                   if (id == "devices") devices.start() else devices.stop()
+                  if (id != "highlights") highlights.stop()
                   content.removeAllViews()
                   when (id) {
                       "library" -> content.addView(library.view())
                       "devices" -> content.addView(devices.view())
                       "activation" -> content.addView(activation.view())
                       "config" -> content.addView(config.view())
+                      "highlights" -> content.addView(highlights.view())
                       "settings" -> content.addView(buildSettings())
                       "about" -> content.addView(AboutView(this).view())
                       else -> content.addView(buildPlaceholder(Pages.all.first { it.id == id }))
@@ -2924,16 +2882,16 @@ jobs:
                       "Package: " + packageName,
                       "Android: " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")",
                       L.s(
-                          "Implemented: welcome, setup and intro flow; Game Library with Steam-style game page; Game Configuration with root-based Mapper Services (keyboard, mouse, gamepad), Mouse Settings (camX/camY), Crazy Tap, Cursor Refresh, shortcuts, keymap export/import; Devices; Activation; About; English/Indonesian.",
-                          "Sudah ada: alur welcome, setup, dan intro; Pustaka Game dengan halaman game bergaya Steam; Konfigurasi Game dengan Mapper Services berbasis root (keyboard, mouse, gamepad), Pengaturan Mouse (camX/camY), Crazy Tap, Cursor Refresh, pintasan, ekspor/impor keymap; Perangkat; Aktivasi; Tentang; Inggris/Indonesia."
+                          "Implemented: welcome, setup and intro flow; Game Library with Steam-style game page; Game Configuration with root-based Mapper Services (keyboard, mouse, gamepad), Mouse Settings (camX/camY), Crazy Tap, Cursor Refresh, shortcuts, keymap export/import; Highlights (screen recorder, screenshots, shortcuts); Dynamic Input Footer; Shizuku activation (experimental); Devices; Activation; About; English/Indonesian.",
+                          "Sudah ada: alur welcome, setup, dan intro; Pustaka Game dengan halaman game bergaya Steam; Konfigurasi Game dengan Mapper Services berbasis root (keyboard, mouse, gamepad), Pengaturan Mouse (camX/camY), Crazy Tap, Cursor Refresh, pintasan, ekspor/impor keymap; Highlights (perekam layar, screenshot, pintasan); Dynamic Input Footer; aktivasi Shizuku (eksperimental); Perangkat; Aktivasi; Tentang; Inggris/Indonesia."
                       ),
                       L.s(
-                          "Needs on-device testing: input reading and touch injection, gamepad axes, typing detection, and the intro on your device.",
-                          "Perlu diuji di perangkat: pembacaan input dan penyuntikan sentuhan, sumbu gamepad, deteksi mengetik, dan intro di perangkat kamu."
+                          "Needs on-device testing: input reading and touch injection, gamepad axes, typing detection, the intro, Highlights recording and screenshots, the footer with your controllers, and the Shizuku route.",
+                          "Perlu diuji di perangkat: pembacaan input dan penyuntikan sentuhan, sumbu gamepad, deteksi mengetik, intro, rekaman dan screenshot Highlights, footer dengan controller kamu, dan jalur Shizuku."
                       ),
                       L.s(
-                          "Not built yet: Highlights (recorder), custom cursor import, Shizuku/ADB mapper routes, UI Sound.",
-                          "Belum ada: Highlights (perekam), impor cursor kustom, jalur mapper Shizuku/ADB, UI Sound."
+                          "Not built yet: game audio recording, custom cursor import, UI Sound. The only non-root route is Shizuku.",
+                          "Belum ada: rekam audio game, impor cursor kustom, UI Sound. Satu-satunya jalur non-root adalah Shizuku."
                       )
                   )
                   for (l in lines) c.addView(ui.line(l, Pal.TEXT, 13f, 8))
@@ -2951,7 +2909,7 @@ jobs:
           /** Konfigurasi mapper per game (package name sebagai kunci) dan hotkey global. */
           object MapStore {
               const val DEF_MAPS = "JOY 0.18 0.70 0.17 17 30 31 32\nCAM 0.72 0.50\nTAP 272 0.88 0.72\nTAP 57 0.93 0.55"
-              private val DEF_HK = mapOf("edit" to "67", "ref" to "1", "ptr" to "56")
+              private val DEF_HK = mapOf("edit" to "67", "ref" to "1", "ptr" to "56", "rec" to "68", "shot" to "87")
               const val FORMAT = "OpenLauncher keymap"
 
               private fun sp(c: Context) = c.applicationContext.getSharedPreferences("ol_mapper", Context.MODE_PRIVATE)
@@ -3102,7 +3060,8 @@ jobs:
               }
 
               private val main = Handler(Looper.getMainLooper())
-              private val shell = RootShell()
+              @Volatile private var shell = RootShell()
+              @Volatile private var viaShz = false
               private var engine: Process? = null
               private var eout: OutputStreamWriter? = null
               private var running = false
@@ -3187,24 +3146,33 @@ jobs:
                   lastHk = 0L
                   seenGame = false
                   startedAt = SystemClock.elapsedRealtime()
+                  viaShz = AccessMgr.viaShizuku(this)
+                  shell = RootShell(viaShz)
                   Thread { boot() }.start()
                   return START_NOT_STICKY
               }
 
               private fun boot() {
-                  setState(0, L.s("Checking root...", "Memeriksa root..."))
-                  if (!shell.run("id").contains("uid=0")) {
+                  setState(0, if (viaShz) L.s("Checking Shizuku...", "Memeriksa Shizuku...") else L.s("Checking root...", "Memeriksa root..."))
+                  val idOut = shell.run("id")
+                  val idOk = if (viaShz) (idOut.contains("uid=0") || idOut.contains("uid=2000")) else idOut.contains("uid=0")
+                  if (!idOk) {
                       val why = if (shell.lastError.isNotEmpty()) " (" + shell.lastError + ")" else ""
-                      Log.e(TAG, "root check failed" + why)
-                      setState(2, L.s("Root access is not available. Activate root first.", "Akses root tidak tersedia. Aktifkan root dulu.") + why)
-                      toast(L.s("Mapper: root access failed", "Mapper: akses root gagal") + why)
+                      Log.e(TAG, "access check failed" + why)
+                      if (viaShz) {
+                          setState(2, L.s("Shizuku access is not available. Start Shizuku and activate it first.", "Akses Shizuku tidak tersedia. Jalankan Shizuku dan aktifkan dulu.") + why)
+                          toast(L.s("Mapper: Shizuku access failed", "Mapper: akses Shizuku gagal") + why)
+                      } else {
+                          setState(2, L.s("Root access is not available. Activate root first.", "Akses root tidak tersedia. Aktifkan root dulu.") + why)
+                          toast(L.s("Mapper: root access failed", "Mapper: akses root gagal") + why)
+                      }
                       stopLater()
                       return
                   }
-                  Log.i(TAG, "root verified (uid=0)")
+                  Log.i(TAG, if (viaShz) "shizuku verified" else "root verified (uid=0)")
                   shell.run("appops set " + packageName + " SYSTEM_ALERT_WINDOW allow")
                   val lib = applicationInfo.nativeLibraryDir + "/libxeng.so"
-                  shell.run("cp '" + lib + "' /data/local/tmp/ol_eng && chmod 755 /data/local/tmp/ol_eng")
+                  shell.run((if (viaShz) "rm -f /data/local/tmp/ol_eng; " else "") + "cp '" + lib + "' /data/local/tmp/ol_eng && chmod 755 /data/local/tmp/ol_eng")
                   if (!shell.run("[ -x /data/local/tmp/ol_eng ] && echo ENGOK").contains("ENGOK")) {
                       Log.e(TAG, "engine binary could not be prepared from " + lib)
                       setState(2, L.s("The mapper engine could not be prepared.", "Mesin mapper tidak bisa disiapkan."))
@@ -3213,10 +3181,10 @@ jobs:
                       return
                   }
                   try {
-                      val p = ProcessBuilder("su").redirectErrorStream(true).start()
+                      val p = if (viaShz) (Shz.shell() ?: throw Exception("Shizuku shell unavailable")) else ProcessBuilder("su").redirectErrorStream(true).start()
                       engine = p
                       eout = OutputStreamWriter(p.outputStream)
-                      send("exec /data/local/tmp/ol_eng")
+                      send((if (viaShz) "exec 2>/dev/null; " else "") + "exec /data/local/tmp/ol_eng")
                   } catch (e: Exception) {
                       Log.e(TAG, "engine start failed: " + e.message)
                       setState(2, L.s("Engine failed to start: ", "Engine gagal dimulai: ") + e.message)
@@ -3277,7 +3245,7 @@ jobs:
                   for (l in MapStore.maps(this, gamePkg).split("\n")) if (l.isNotBlank()) send(l.trim())
                   sendSens()
                   send("LOCK " + (if (MapStore.lock(this, gamePkg)) 1 else 0))
-                  for (n in listOf("edit", "ref", "ptr")) send("HK " + n + " " + MapStore.hk(this, n).replace(',', ' '))
+                  for (n in listOf("edit", "ref", "ptr", "rec", "shot")) send("HK " + n + " " + MapStore.hk(this, n).replace(',', ' '))
                   lastMode = ""
                   lastView = ""
               }
@@ -3305,6 +3273,8 @@ jobs:
                       "HK" -> if (p.size >= 3) {
                           when (p[2]) {
                               "edit" -> main.post { onEditHotkey() }
+                              "rec" -> main.post { Hl.toggleRecording(this) }
+                              "shot" -> main.post { Hl.screenshot(this) }
                           }
                       }
                       "SUSP" -> if (p.size >= 3) {
@@ -4777,8 +4747,8 @@ jobs:
           static double fr_l = 0, fr_t = 0, fr_r = 0, fr_b = 0, fr_dw = 0, fr_dh = 0;
           static Map maps[MAXMAP];
           static int nmap = 0, tapn = 0;
-          static Hk hks[4];
-          static const char *hk_name[4] = { "edit", "tog", "ref", "ptr" };
+          static Hk hks[6];
+          static const char *hk_name[6] = { "edit", "tog", "ref", "ptr", "rec", "shot" };
           static char kd[KDSZ];
           static int mdx = 0, mdy = 0;
           static long cam_last = 0;
@@ -5122,7 +5092,7 @@ jobs:
                   return;
               }
               if (down) {
-                  for (i = 0; i < 4; i++) {
+                  for (i = 0; i < 6; i++) {
                       int all = hks[i].n > 0, has = 0;
                       for (j = 0; j < hks[i].n; j++) {
                           if (hks[i].k[j] == code) has = 1;
@@ -5229,7 +5199,7 @@ jobs:
               else if (!strcmp(tok[0], "SENS") && n >= 3) { sensx = atof(tok[1]); sensy = atof(tok[2]); if (sensx < 0) sensx = 0; if (sensy < 0) sensy = 0; if (sensx > 100) sensx = 100; if (sensy > 100) sensy = 100; }
               else if (!strcmp(tok[0], "LOCK") && n >= 2) { susp = 0; lockc = atoi(tok[1]) ? 1 : 0; release_all(); }
               else if (!strcmp(tok[0], "HK") && n >= 2) {
-                  int h = !strcmp(tok[1], "edit") ? 0 : !strcmp(tok[1], "tog") ? 1 : !strcmp(tok[1], "ref") ? 2 : !strcmp(tok[1], "ptr") ? 3 : -1;
+                  int h = !strcmp(tok[1], "edit") ? 0 : !strcmp(tok[1], "tog") ? 1 : !strcmp(tok[1], "ref") ? 2 : !strcmp(tok[1], "ptr") ? 3 : !strcmp(tok[1], "rec") ? 4 : !strcmp(tok[1], "shot") ? 5 : -1;
                   if (h >= 0) { hks[h].n = 0; for (i = 2; i < n && hks[h].n < 6; i++) hks[h].k[hks[h].n++] = atoi(tok[i]); }
               }
               else if (!strcmp(tok[0], "VIEW") && n >= 4) {
@@ -5599,6 +5569,1286 @@ jobs:
 
           main()
           write_xrm_manifest(sys.argv[2], sys.argv[3])
+          OLEOF
+          mkdir -p 'app/src/main/java/com/midosxq/oplx'
+          cat > 'app/src/main/java/com/midosxq/oplx/Dif.kt' <<'OLEOF'
+          package com.midosxq.oplx
+
+          import android.content.Context
+          import android.graphics.Canvas
+          import android.graphics.Paint
+          import android.graphics.Path
+          import android.graphics.RectF
+          import android.graphics.Typeface
+          import android.hardware.input.InputManager
+          import android.os.Handler
+          import android.os.Looper
+          import android.view.Gravity
+          import android.view.InputDevice
+          import android.view.KeyEvent
+          import android.view.MotionEvent
+          import android.view.View
+          import android.widget.LinearLayout
+
+          /** Metode input yang sedang dipakai untuk mengoperasikan UI launcher. */
+          enum class InKind { TOUCH, KEYBOARD, MOUSE, PAD_XBOX, PAD_PS, PAD_OTHER }
+
+          /** Klasifikasi perangkat input dari event dan dari daftar perangkat yang terhubung. */
+          object InputKinds {
+              private const val VENDOR_SONY = 0x054c
+              private const val VENDOR_MICROSOFT = 0x045e
+
+              fun isPad(d: InputDevice): Boolean {
+                  val s = d.sources
+                  return (s and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
+                      (s and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
+              }
+
+              /** Tipe gamepad dari vendor ID, dengan nama perangkat sebagai cadangan. Tidak yakin = generik. */
+              fun padKind(d: InputDevice): InKind {
+                  val n = (d.name ?: "").lowercase()
+                  return when {
+                      d.vendorId == VENDOR_SONY || n.contains("dualshock") || n.contains("dualsense") || n.contains("playstation") -> InKind.PAD_PS
+                      d.vendorId == VENDOR_MICROSOFT || n.contains("xbox") || n.contains("x-box") -> InKind.PAD_XBOX
+                      else -> InKind.PAD_OTHER
+                  }
+              }
+
+              fun isKeyboard(d: InputDevice): Boolean =
+                  !d.isVirtual && d.keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC && !isPad(d)
+
+              fun isMouse(d: InputDevice): Boolean =
+                  (d.sources and InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE
+
+              /** Pilihan awal dari perangkat yang sudah terhubung: gamepad, lalu keyboard, lalu mouse, lalu sentuhan. */
+              fun initial(): InKind {
+                  var pad: InKind? = null
+                  var kb = false
+                  var mouse = false
+                  for (id in InputDevice.getDeviceIds()) {
+                      val d = InputDevice.getDevice(id) ?: continue
+                      if (isPad(d)) { if (pad == null) pad = padKind(d) }
+                      else if (isKeyboard(d)) kb = true
+                      else if (isMouse(d)) mouse = true
+                  }
+                  return pad ?: if (kb) InKind.KEYBOARD else if (mouse) InKind.MOUSE else InKind.TOUCH
+              }
+
+              fun ofKey(e: KeyEvent): InKind? {
+                  val d = e.device ?: return null
+                  if (isPad(d)) return padKind(d)
+                  if (isKeyboard(d)) return InKind.KEYBOARD
+                  return null
+              }
+
+              /** Sentuhan layar sengaja tidak mengubah apa pun (null): menyentuh layar tidak boleh mengganti atau menyembunyikan DIF. */
+              fun ofMotion(e: MotionEvent): InKind? {
+                  val d = e.device ?: return null
+                  if (e.isFromSource(InputDevice.SOURCE_JOYSTICK) && e.actionMasked == MotionEvent.ACTION_MOVE) {
+                      val axes = intArrayOf(MotionEvent.AXIS_X, MotionEvent.AXIS_Y, MotionEvent.AXIS_HAT_X, MotionEvent.AXIS_HAT_Y, MotionEvent.AXIS_Z, MotionEvent.AXIS_RZ)
+                      for (a in axes) if (Math.abs(e.getAxisValue(a)) > 0.6f) return padKind(d)
+                      return null
+                  }
+                  if (e.isFromSource(InputDevice.SOURCE_MOUSE)) return InKind.MOUSE
+                  return null
+              }
+          }
+
+          /** Ikon tombol kecil untuk DIF: keycap, D-pad, tombol Xbox (huruf berwarna), simbol PlayStation, atau generik. */
+          class GlyphView(ctx: Context, private val dens: Float, private val kind: String, private val label: String) : View(ctx) {
+              private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val box = RectF()
+              private val path = Path()
+              private val size = 22f * dens
+              private var wide = size
+
+              init {
+                  p.typeface = Typeface.DEFAULT_BOLD
+                  p.textSize = 11f * dens
+                  p.textAlign = Paint.Align.CENTER
+                  if (kind == "key") wide = maxOf(size, p.measureText(label) + 14f * dens)
+              }
+
+              override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                  setMeasuredDimension(wide.toInt(), size.toInt())
+              }
+
+              private fun text(c: Canvas, s: String, cx: Float, cy: Float, color: Int) {
+                  p.style = Paint.Style.FILL
+                  p.color = color
+                  c.drawText(s, cx, cy - (p.descent() + p.ascent()) / 2f, p)
+              }
+
+              override fun onDraw(c: Canvas) {
+                  val w = width.toFloat()
+                  val h = height.toFloat()
+                  val cx = w / 2f
+                  val cy = h / 2f
+                  val r = h / 2f - dens
+                  when (kind) {
+                      "key" -> {
+                          box.set(dens, dens, w - dens, h - dens)
+                          p.style = Paint.Style.STROKE
+                          p.strokeWidth = 1.5f * dens
+                          p.color = Pal.PURPLE_LIGHT
+                          c.drawRoundRect(box, 5f * dens, 5f * dens, p)
+                          text(c, label, cx, cy, Pal.TEXT)
+                      }
+                      "dpad" -> {
+                          p.style = Paint.Style.FILL
+                          p.color = Pal.PURPLE_LIGHT
+                          val a = 3f * dens
+                          val l = 9f * dens
+                          box.set(cx - l, cy - a, cx + l, cy + a)
+                          c.drawRoundRect(box, dens, dens, p)
+                          box.set(cx - a, cy - l, cx + a, cy + l)
+                          c.drawRoundRect(box, dens, dens, p)
+                      }
+                      "xA", "xB", "xX", "xY" -> {
+                          val col = when (kind) {
+                              "xA" -> 0xFF6DB33F.toInt()
+                              "xB" -> 0xFFE0443B.toInt()
+                              "xX" -> 0xFF2F80ED.toInt()
+                              else -> 0xFFF2C94C.toInt()
+                          }
+                          p.style = Paint.Style.FILL
+                          p.color = col
+                          c.drawCircle(cx, cy, r, p)
+                          text(c, label, cx, cy, 0xFF000000.toInt())
+                      }
+                      "psX", "psO", "psS", "psT" -> {
+                          p.style = Paint.Style.STROKE
+                          p.strokeWidth = 1f * dens
+                          p.color = Pal.MUTED
+                          c.drawCircle(cx, cy, r, p)
+                          p.strokeWidth = 2f * dens
+                          val k = r * 0.5f
+                          when (kind) {
+                              "psX" -> {
+                                  p.color = 0xFF7CA7E8.toInt()
+                                  c.drawLine(cx - k, cy - k, cx + k, cy + k, p)
+                                  c.drawLine(cx - k, cy + k, cx + k, cy - k, p)
+                              }
+                              "psO" -> {
+                                  p.color = 0xFFE0626A.toInt()
+                                  c.drawCircle(cx, cy, k, p)
+                              }
+                              "psS" -> {
+                                  p.color = 0xFFD18ABF.toInt()
+                                  box.set(cx - k, cy - k, cx + k, cy + k)
+                                  c.drawRect(box, p)
+                              }
+                              else -> {
+                                  p.color = 0xFF49B391.toInt()
+                                  path.reset()
+                                  path.moveTo(cx, cy - k)
+                                  path.lineTo(cx + k, cy + k)
+                                  path.lineTo(cx - k, cy + k)
+                                  path.close()
+                                  c.drawPath(path, p)
+                              }
+                          }
+                      }
+                      else -> {
+                          p.style = Paint.Style.FILL
+                          p.color = Pal.GREY
+                          c.drawCircle(cx, cy, r, p)
+                          text(c, label, cx, cy, 0xFF000000.toInt())
+                      }
+                  }
+              }
+          }
+
+          /**
+           * Dynamic Input Footer: bar tipis di kanan bawah yang selalu terlihat. Isinya mengikuti perangkat yang
+           * sedang dipakai untuk mengoperasikan UI launcher (keyboard, mouse, atau gamepad Xbox/PlayStation/lainnya).
+           * Sentuhan layar tidak mengubah dan tidak menyembunyikan footer.
+           */
+          class DifView(private val act: MainActivity) : LinearLayout(act), InputManager.InputDeviceListener {
+              private val ui = Ui(act)
+              private val im = act.getSystemService(Context.INPUT_SERVICE) as InputManager
+              var kind: InKind = InputKinds.initial()
+                  private set
+
+              init {
+                  orientation = HORIZONTAL
+                  gravity = Gravity.END or Gravity.CENTER_VERTICAL
+                  setBackgroundColor(Pal.BG)
+                  setPadding(ui.dp(16), ui.dp(7), ui.dp(20), ui.dp(7))
+                  rebuild()
+              }
+
+              fun setKind(k: InKind) {
+                  if (k == kind) return
+                  kind = k
+                  rebuild()
+              }
+
+              fun noteKey(e: KeyEvent) {
+                  val k = InputKinds.ofKey(e)
+                  if (k != null) setKind(k)
+              }
+
+              fun noteMotion(e: MotionEvent) {
+                  val k = InputKinds.ofMotion(e)
+                  if (k != null) setKind(k)
+              }
+
+              private fun item(g: View, label: String) {
+                  addView(g, lp(WRAP, WRAP, 0, 18))
+                  val t = ui.tv(label, 12f, Pal.MUTED)
+                  t.gravity = Gravity.CENTER_VERTICAL
+                  addView(t, lp(WRAP, WRAP, 0, 6))
+              }
+
+              private fun lp(w: Int, h: Int, top: Int, left: Int): LinearLayout.LayoutParams {
+                  val l = LinearLayout.LayoutParams(w, h)
+                  l.topMargin = ui.dp(top)
+                  l.leftMargin = ui.dp(left)
+                  l.gravity = Gravity.CENTER_VERTICAL
+                  return l
+              }
+
+              private fun g(kindName: String, label: String): GlyphView = GlyphView(act, ui.dens, kindName, label)
+
+              private fun rebuild() {
+                  removeAllViews()
+                  val nav = L.s("Navigate", "Navigasi")
+                  val sel = L.s("Select", "Pilih")
+                  val back = L.s("Back", "Kembali")
+                  when (kind) {
+                      InKind.TOUCH -> {
+                          val t = ui.tv(L.s("Tap to select  |  Swipe to scroll", "Ketuk untuk memilih  |  Geser untuk menggulir"), 12f, Pal.MUTED)
+                          addView(t, lp(WRAP, WRAP, 0, 0))
+                      }
+                      InKind.KEYBOARD -> {
+                          item(g("key", "↑↓←→"), nav)
+                          item(g("key", "Enter"), sel)
+                          item(g("key", "Esc"), back)
+                      }
+                      InKind.MOUSE -> {
+                          item(g("key", L.s("Click", "Klik")), sel)
+                          item(g("key", L.s("Scroll", "Gulir")), L.s("Scroll", "Gulir"))
+                          item(g("key", L.s("Right click", "Klik kanan")), back)
+                      }
+                      InKind.PAD_XBOX -> {
+                          item(g("dpad", ""), nav)
+                          item(g("xA", "A"), sel)
+                          item(g("xB", "B"), back)
+                      }
+                      InKind.PAD_PS -> {
+                          item(g("dpad", ""), nav)
+                          item(g("psX", ""), sel)
+                          item(g("psO", ""), back)
+                      }
+                      InKind.PAD_OTHER -> {
+                          item(g("dpad", ""), nav)
+                          item(g("gen", "A"), sel)
+                          item(g("gen", "B"), back)
+                      }
+                  }
+              }
+
+              override fun onAttachedToWindow() {
+                  super.onAttachedToWindow()
+                  im.registerInputDeviceListener(this, Handler(Looper.getMainLooper()))
+                  setKind(InputKinds.initial())
+              }
+
+              override fun onDetachedFromWindow() {
+                  im.unregisterInputDeviceListener(this)
+                  super.onDetachedFromWindow()
+              }
+
+              override fun onInputDeviceAdded(deviceId: Int) {
+                  val d = InputDevice.getDevice(deviceId) ?: return
+                  if (InputKinds.isPad(d)) setKind(InputKinds.padKind(d))
+              }
+
+              override fun onInputDeviceRemoved(deviceId: Int) {
+                  if (kind == InKind.PAD_XBOX || kind == InKind.PAD_PS || kind == InKind.PAD_OTHER) setKind(InputKinds.initial())
+              }
+
+              override fun onInputDeviceChanged(deviceId: Int) {}
+          }
+          OLEOF
+          mkdir -p 'app/src/main/java/com/midosxq/oplx'
+          cat > 'app/src/main/java/com/midosxq/oplx/HighlightsView.kt' <<'OLEOF'
+          package com.midosxq.oplx
+
+          import android.app.AlertDialog
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.media.MediaScannerConnection
+          import android.media.projection.MediaProjectionManager
+          import android.net.Uri
+          import android.os.Handler
+          import android.os.Looper
+          import android.provider.Settings
+          import android.text.format.Formatter
+          import android.view.Gravity
+          import android.view.KeyEvent
+          import android.view.View
+          import android.widget.FrameLayout
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import android.widget.Toast
+          import java.io.File
+          import java.text.SimpleDateFormat
+          import java.util.Date
+          import java.util.Locale
+
+          /** Halaman Highlights: sesi capture, perekam layar, screenshot, pengaturan, pintasan, dan daftar file. */
+          class HighlightsView(private val act: MainActivity) {
+              private val ui = Ui(act)
+              private val root = FrameLayout(act)
+              private val tick = Handler(Looper.getMainLooper())
+              private var shown = false
+              private var statusTv: TextView? = null
+
+              private val ticker = object : Runnable {
+                  override fun run() {
+                      if (!shown) return
+                      statusTv?.text = statusText()
+                      statusTv?.setTextColor(statusColor())
+                      if (HlService.recording) tick.postDelayed(this, 1000)
+                  }
+              }
+
+              fun view(): View {
+                  shown = true
+                  HlService.onChange = { act.runOnUiThread { if (shown) build() } }
+                  build()
+                  return root
+              }
+
+              fun stop() {
+                  shown = false
+                  HlService.onChange = null
+                  tick.removeCallbacks(ticker)
+              }
+
+              /** Dipanggil saat kembali ke aplikasi atau setelah izin berubah. */
+              fun refresh() {
+                  if (shown) build()
+              }
+
+              fun startProjection() {
+                  val mgr = act.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                  try {
+                      act.startActivityForResult(mgr.createScreenCaptureIntent(), 51)
+                  } catch (e: Exception) {
+                      Toast.makeText(act, L.s("Screen capture permission is not available: ", "Izin tangkap layar tidak tersedia: ") + e.message, Toast.LENGTH_LONG).show()
+                  }
+              }
+
+              fun onProjection(resultCode: Int, data: Intent?) {
+                  if (resultCode == android.app.Activity.RESULT_OK && data != null) {
+                      HlService.startSession(act, resultCode, data)
+                  } else {
+                      Toast.makeText(act, L.s("Screen capture was not allowed.", "Tangkap layar tidak diizinkan."), Toast.LENGTH_SHORT).show()
+                  }
+              }
+
+              private fun statusText(): String {
+                  if (HlService.recording) {
+                      val s = ((android.os.SystemClock.elapsedRealtime() - HlService.recStart) / 1000L).toInt()
+                      return L.s("Recording ", "Merekam ") + String.format(Locale.US, "%02d:%02d", s / 60, s % 60)
+                  }
+                  return if (HlService.sessionActive()) L.s("Session ready", "Sesi siap") else L.s("Session not started", "Sesi belum dimulai")
+              }
+
+              private fun statusColor(): Int =
+                  if (HlService.recording) Pal.RED else if (HlService.sessionActive()) Pal.GREEN else Pal.AMBER
+
+              private fun micGranted(): Boolean =
+                  act.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+              private fun build() {
+                  root.removeAllViews()
+                  tick.removeCallbacks(ticker)
+                  val sv = ScrollView(act)
+                  sv.isFillViewport = true
+                  val col = LinearLayout(act)
+                  col.orientation = LinearLayout.VERTICAL
+                  col.setPadding(ui.dp(36), ui.dp(28), ui.dp(36), ui.dp(28))
+                  col.addView(ui.tv(L.s("Highlights", "Sorotan"), 28f, Pal.TEXT, true))
+                  val line = View(act)
+                  line.setBackgroundColor(Pal.SEP)
+                  col.addView(line, ui.lp(MATCH, maxOf(1, ui.dp(1)), 16))
+
+                  sessionCard(col)
+                  settingsCard(col)
+                  shortcutsCard(col)
+                  storageCard(col)
+                  filesCard(col)
+
+                  sv.addView(col)
+                  root.addView(sv, FrameLayout.LayoutParams(MATCH, MATCH))
+                  if (HlService.recording) tick.postDelayed(ticker, 1000)
+              }
+
+              private fun sessionCard(col: LinearLayout) {
+                  val c = ui.card()
+                  c.addView(ui.tv(L.s("Capture session", "Sesi capture"), 15f, Pal.PURPLE_LIGHT, true))
+                  val st = ui.tv(statusText(), 15f, statusColor(), true)
+                  st.layoutParams = ui.lp(WRAP, WRAP, 8)
+                  statusTv = st
+                  c.addView(st)
+                  val row = LinearLayout(act)
+                  row.orientation = LinearLayout.HORIZONTAL
+                  if (!HlService.sessionActive()) {
+                      row.addView(ui.pill(L.s("Start session", "Mulai sesi"), true) { startProjection() }, ui.lp(WRAP, WRAP))
+                  } else {
+                      val s = HlService.instance
+                      val recLabel = if (HlService.recording) L.s("Stop recording", "Hentikan rekaman") else L.s("Record", "Rekam")
+                      row.addView(ui.pill(recLabel, !HlService.recording) { s?.toggleRec() }, ui.lp(WRAP, WRAP))
+                      row.addView(ui.pill(L.s("Screenshot", "Screenshot"), false) { Hl.screenshot(act) }, ui.lp(WRAP, WRAP, 0, 10))
+                      row.addView(ui.pill(L.s("End session", "Akhiri sesi"), false) { HlService.stopSession(act) }, ui.lp(WRAP, WRAP, 0, 10))
+                  }
+                  c.addView(row, ui.lp(WRAP, WRAP, 12))
+                  c.addView(
+                      ui.line(
+                          L.s(
+                              "Android asks for permission to capture the screen. Choose \"Entire screen\" so the game is recorded, not only this launcher. The permission lasts until you end the session.",
+                              "Android meminta izin untuk menangkap layar. Pilih \"Seluruh layar\" supaya game ikut terekam, bukan hanya launcher ini. Izin berlaku sampai sesi diakhiri."
+                          ), Pal.MUTED, 11f, 10
+                      )
+                  )
+                  c.addView(
+                      ui.line(
+                          L.s(
+                              "Shortcuts work while Mapper Services is running. Without root, screenshots use the session and are not available during recording.",
+                              "Pintasan berfungsi saat Mapper Services berjalan. Tanpa root, screenshot memakai sesi dan tidak tersedia saat merekam."
+                          ), Pal.MUTED, 11f, 6
+                      )
+                  )
+                  col.addView(c, ui.lp(MATCH, WRAP, 16))
+              }
+
+              private fun choice(c: LinearLayout, title: String, opts: List<Pair<String, String>>, cur: String, pick: (String) -> Unit) {
+                  c.addView(ui.line(title, Pal.TEXT, 13f, 14))
+                  val row = LinearLayout(act)
+                  row.orientation = LinearLayout.HORIZONTAL
+                  var first = true
+                  for (o in opts) {
+                      val v = o.first
+                      row.addView(ui.pill(o.second, v == cur) { pick(v); build() }, ui.lp(WRAP, WRAP, 0, if (first) 0 else 8))
+                      first = false
+                  }
+                  c.addView(row, ui.lp(WRAP, WRAP, 6))
+              }
+
+              private fun settingsCard(col: LinearLayout) {
+                  val c = ui.card()
+                  c.addView(ui.tv(L.s("Recorder settings", "Pengaturan perekam"), 15f, Pal.PURPLE_LIGHT, true))
+                  choice(
+                      c, L.s("Resolution", "Resolusi"),
+                      listOf("native" to "Native", "1080" to "1080p", "720" to "720p", "480" to "480p"),
+                      Hl.res(act)
+                  ) { Hl.setRes(act, it) }
+                  choice(
+                      c, "FPS",
+                      listOf("30" to "30", "60" to "60"),
+                      Hl.fps(act).toString()
+                  ) { Hl.setFps(act, it.toInt()) }
+                  choice(
+                      c, L.s("Bitrate", "Bitrate"),
+                      listOf("4" to "4 Mbps", "8" to "8 Mbps", "12" to "12 Mbps", "16" to "16 Mbps"),
+                      Hl.mbps(act).toString()
+                  ) { Hl.setMbps(act, it.toInt()) }
+                  c.addView(ui.line(L.s("Microphone", "Mikrofon"), Pal.TEXT, 13f, 14))
+                  val on = Hl.mic(act)
+                  c.addView(ui.pill(if (on) "ON" else "OFF", on) {
+                      val next = !Hl.mic(act)
+                      Hl.setMic(act, next)
+                      if (next && !micGranted()) act.requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), 52)
+                      build()
+                  }, ui.lp(WRAP, WRAP, 6))
+                  if (on && !micGranted()) {
+                      c.addView(ui.line(L.s("Microphone permission is not granted yet.", "Izin mikrofon belum diberikan."), Pal.AMBER, 12f, 6))
+                  } else if (on && HlService.sessionActive()) {
+                      c.addView(ui.line(L.s("If the microphone was just allowed, end the session and start it again to use it.", "Jika mikrofon baru diizinkan, akhiri sesi lalu mulai lagi agar dipakai."), Pal.MUTED, 11f, 6))
+                  }
+                  c.addView(ui.line(L.s("Game audio is not recorded in this version.", "Audio game belum direkam di versi ini."), Pal.MUTED, 11f, 10))
+                  col.addView(c, ui.lp(MATCH, WRAP, 14))
+              }
+
+              private fun shortcutsCard(col: LinearLayout) {
+                  val c = ui.card()
+                  c.addView(ui.tv(L.s("Shortcuts", "Pintasan"), 15f, Pal.PURPLE_LIGHT, true))
+                  val names = listOf(
+                      "rec" to L.s("Start / stop recording", "Mulai / hentikan rekaman"),
+                      "shot" to L.s("Screenshot", "Screenshot")
+                  )
+                  for (n in names) {
+                      val key = n.first
+                      val title = n.second
+                      val r = LinearLayout(act)
+                      r.orientation = LinearLayout.HORIZONTAL
+                      r.gravity = Gravity.CENTER_VERTICAL
+                      val t = LinearLayout(act)
+                      t.orientation = LinearLayout.VERTICAL
+                      t.addView(ui.tv(title, 14f, Pal.TEXT, true))
+                      t.addView(ui.line(Keys.combo(MapStore.hk(act, key)), Pal.MUTED, 12f, 2))
+                      r.addView(t, LinearLayout.LayoutParams(0, WRAP, 1f))
+                      r.addView(ui.pill(L.s("Change", "Ubah"), false) {
+                          captureKeys(title) { combo ->
+                              MapStore.setHk(act, key, combo)
+                              MapperService.instance?.sendConfig()
+                              build()
+                          }
+                      }, ui.lp(WRAP, WRAP))
+                      r.addView(ui.pill(L.s("Clear", "Hapus"), false) {
+                          MapStore.setHk(act, key, "")
+                          MapperService.instance?.sendConfig()
+                          build()
+                      }, ui.lp(WRAP, WRAP, 0, 8))
+                      c.addView(r, ui.lp(MATCH, WRAP, 10))
+                  }
+                  col.addView(c, ui.lp(MATCH, WRAP, 14))
+              }
+
+              /** Tangkap kombinasi tombol fisik lewat KeyEvent (scancode = kode evdev), sama seperti pintasan mapper. */
+              private fun captureKeys(title: String, cb: (String) -> Unit) {
+                  val keys = ArrayList<Int>()
+                  val tv = ui.tv(L.s("Press the key combination now...", "Tekan kombinasi tombol sekarang..."), 15f, Pal.TEXT)
+                  tv.setPadding(ui.dp(24), ui.dp(20), ui.dp(24), ui.dp(20))
+                  val dlg = AlertDialog.Builder(act).setTitle(title).setView(tv).setNegativeButton(L.s("Cancel", "Batal"), null).create()
+                  dlg.setOnKeyListener { d, code, ev ->
+                      if (code == KeyEvent.KEYCODE_BACK) {
+                          false
+                      } else {
+                          if (ev.action == KeyEvent.ACTION_DOWN && ev.repeatCount == 0) {
+                              if (ev.scanCode > 0 && !keys.contains(ev.scanCode)) keys.add(ev.scanCode)
+                              tv.text = Keys.combo(keys.joinToString(","))
+                          } else if (ev.action == KeyEvent.ACTION_UP && keys.isNotEmpty()) {
+                              val s = keys.joinToString(",")
+                              d.dismiss()
+                              cb(s)
+                          }
+                          true
+                      }
+                  }
+                  dlg.show()
+              }
+
+              private fun storageCard(col: LinearLayout) {
+                  val c = ui.card()
+                  c.addView(ui.tv(L.s("Storage", "Penyimpanan"), 15f, Pal.PURPLE_LIGHT, true))
+                  c.addView(ui.line(L.s("Videos: ", "Video: ") + File(Hl.baseDir(), Hl.DIR_VIDEO).absolutePath, Pal.TEXT, 12f, 8))
+                  c.addView(ui.line(L.s("Screenshots: ", "Screenshot: ") + File(Hl.baseDir(), Hl.DIR_SHOT).absolutePath, Pal.TEXT, 12f, 4))
+                  if (Hl.storageOk()) {
+                      c.addView(ui.line(L.s("All files access: granted", "Akses semua file: diberikan"), Pal.GREEN, 13f, 10))
+                  } else {
+                      c.addView(ui.line(L.s("All files access: not granted. It is needed to save into this folder.", "Akses semua file: belum diberikan. Dibutuhkan untuk menyimpan ke folder ini."), Pal.AMBER, 13f, 10))
+                      c.addView(ui.pill(L.s("Grant access", "Beri akses"), true) {
+                          try {
+                              act.startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:" + act.packageName)))
+                          } catch (e: Exception) {
+                              try { act.startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)) } catch (x: Exception) {}
+                          }
+                      }, ui.lp(WRAP, WRAP, 8))
+                  }
+                  col.addView(c, ui.lp(MATCH, WRAP, 14))
+              }
+
+              private fun filesCard(col: LinearLayout) {
+                  val c = ui.card()
+                  c.addView(ui.tv(L.s("Recent files", "File terbaru"), 15f, Pal.PURPLE_LIGHT, true))
+                  val files = if (Hl.storageOk()) Hl.list() else emptyList()
+                  if (files.isEmpty()) {
+                      c.addView(ui.line(L.s("No recordings or screenshots yet.", "Belum ada rekaman atau screenshot."), Pal.MUTED, 13f, 8))
+                  }
+                  val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
+                  for (f in files) {
+                      val r = LinearLayout(act)
+                      r.orientation = LinearLayout.HORIZONTAL
+                      r.gravity = Gravity.CENTER_VERTICAL
+                      val t = LinearLayout(act)
+                      t.orientation = LinearLayout.VERTICAL
+                      t.addView(ui.tv(f.name, 13f, Pal.TEXT, true))
+                      t.addView(ui.line(fmt.format(Date(f.lastModified())) + "  |  " + Formatter.formatShortFileSize(act, f.length()), Pal.MUTED, 11f, 2))
+                      r.addView(t, LinearLayout.LayoutParams(0, WRAP, 1f))
+                      r.addView(ui.pill(L.s("Open", "Buka"), false) { openFile(f) }, ui.lp(WRAP, WRAP))
+                      r.addView(ui.pill(L.s("Delete", "Hapus"), false) { confirmDelete(f) }, ui.lp(WRAP, WRAP, 0, 8))
+                      c.addView(r, ui.lp(MATCH, WRAP, 10))
+                  }
+                  col.addView(c, ui.lp(MATCH, WRAP, 14))
+              }
+
+              private fun openFile(f: File) {
+                  val mime = if (f.name.lowercase().endsWith(".mp4")) "video/mp4" else "image/png"
+                  MediaScannerConnection.scanFile(act, arrayOf(f.absolutePath), null) { _, uri ->
+                      act.runOnUiThread {
+                          if (uri == null) {
+                              Toast.makeText(act, L.s("This file could not be opened.", "File ini tidak bisa dibuka."), Toast.LENGTH_SHORT).show()
+                          } else {
+                              try {
+                                  val i = Intent(Intent.ACTION_VIEW)
+                                  i.setDataAndType(uri, mime)
+                                  i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                  act.startActivity(i)
+                              } catch (e: Exception) {
+                                  Toast.makeText(act, L.s("No app found to open this file.", "Tidak ada app untuk membuka file ini."), Toast.LENGTH_SHORT).show()
+                              }
+                          }
+                      }
+                  }
+              }
+
+              private fun confirmDelete(f: File) {
+                  AlertDialog.Builder(act)
+                      .setTitle(L.s("Delete file?", "Hapus file?"))
+                      .setMessage(f.name)
+                      .setPositiveButton(L.s("Delete", "Hapus")) { _, _ ->
+                          val ok = f.delete()
+                          if (ok) Hl.scan(act, f.absolutePath)
+                          Toast.makeText(act, if (ok) L.s("Deleted", "Dihapus") else L.s("Could not delete", "Tidak bisa menghapus"), Toast.LENGTH_SHORT).show()
+                          build()
+                      }
+                      .setNegativeButton(L.s("Cancel", "Batal"), null)
+                      .show()
+              }
+          }
+          OLEOF
+          mkdir -p 'app/src/main/java/com/midosxq/oplx'
+          cat > 'app/src/main/java/com/midosxq/oplx/Hl.kt' <<'OLEOF'
+          package com.midosxq.oplx
+
+          import android.content.Context
+          import android.graphics.Point
+          import android.media.MediaScannerConnection
+          import android.os.Environment
+          import android.os.Handler
+          import android.os.Looper
+          import android.view.WindowManager
+          import android.widget.Toast
+          import java.io.File
+          import java.text.SimpleDateFormat
+          import java.util.Date
+          import java.util.Locale
+
+          /**
+           * Highlights: pengaturan perekam, folder output, dan screenshot.
+           * Video: /storage/emulated/0/openlauncher/highlight. Screenshot: /storage/emulated/0/openlauncher/gamecapture.
+           */
+          object Hl {
+              const val DIR_VIDEO = "highlight"
+              const val DIR_SHOT = "gamecapture"
+
+              private fun sp(c: Context) = c.applicationContext.getSharedPreferences("ol_highlights", Context.MODE_PRIVATE)
+
+              /** Sisi pendek video: "native", "1080", "720", atau "480". */
+              fun res(c: Context): String = sp(c).getString("res", "720") ?: "720"
+              fun setRes(c: Context, v: String) { sp(c).edit().putString("res", v).apply() }
+              fun fps(c: Context): Int = sp(c).getInt("fps", 30)
+              fun setFps(c: Context, v: Int) { sp(c).edit().putInt("fps", v).apply() }
+              fun mbps(c: Context): Int = sp(c).getInt("mbps", 8)
+              fun setMbps(c: Context, v: Int) { sp(c).edit().putInt("mbps", v).apply() }
+              fun mic(c: Context): Boolean = sp(c).getBoolean("mic", false)
+              fun setMic(c: Context, v: Boolean) { sp(c).edit().putBoolean("mic", v).apply() }
+
+              @Suppress("DEPRECATION")
+              fun baseDir(): File = File(Environment.getExternalStorageDirectory(), "openlauncher")
+
+              fun dir(kind: String): File? {
+                  val d = File(baseDir(), kind)
+                  if (d.isDirectory) return d
+                  return if (d.mkdirs()) d else null
+              }
+
+              /** Menulis ke folder biasa di penyimpanan bersama butuh izin "Akses semua file". */
+              fun storageOk(): Boolean = Environment.isExternalStorageManager()
+
+              fun stamp(): String = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+
+              fun toast(c: Context, s: String) {
+                  val app = c.applicationContext
+                  Handler(Looper.getMainLooper()).post { Toast.makeText(app, s, Toast.LENGTH_SHORT).show() }
+              }
+
+              fun scan(c: Context, path: String) {
+                  try { MediaScannerConnection.scanFile(c.applicationContext, arrayOf(path), null, null) } catch (e: Exception) {}
+              }
+
+              /** Ukuran video sesuai pengaturan resolusi: tidak pernah diperbesar, selalu genap. */
+              @Suppress("DEPRECATION")
+              fun size(c: Context): Pair<Int, Int> {
+                  val wm = c.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                  val pt = Point()
+                  wm.defaultDisplay.getRealSize(pt)
+                  var w: Int = pt.x
+                  var h: Int = pt.y
+                  val t = when (res(c)) {
+                      "1080" -> 1080
+                      "720" -> 720
+                      "480" -> 480
+                      else -> 0
+                  }
+                  val short = minOf(w, h)
+                  if (t in 1 until short) {
+                      val s = t.toFloat() / short
+                      w = (w * s).toInt()
+                      h = (h * s).toInt()
+                  }
+                  w -= w % 2
+                  h -= h % 2
+                  return Pair(maxOf(2, w), maxOf(2, h))
+              }
+
+              /** File hasil rekaman dan screenshot, terbaru di atas. */
+              fun list(): List<File> {
+                  val out = ArrayList<File>()
+                  for (k in listOf(DIR_VIDEO, DIR_SHOT)) {
+                      val fs = File(baseDir(), k).listFiles() ?: continue
+                      for (f in fs) {
+                          val n = f.name.lowercase()
+                          if (f.isFile && (n.endsWith(".mp4") || n.endsWith(".png"))) out.add(f)
+                      }
+                  }
+                  out.sortByDescending { it.lastModified() }
+                  return if (out.size > 30) out.subList(0, 30) else out
+              }
+
+              /**
+               * Screenshot. Dengan root atau Shizuku: `screencap -p` dibaca langsung dari stdout dan ditulis oleh app sendiri (jalan juga saat merekam).
+               * Tanpa root: lewat sesi capture di Highlights (tidak tersedia saat sedang merekam).
+               */
+              fun screenshot(c: Context) {
+                  val app = c.applicationContext
+                  Thread {
+                      if (!storageOk()) {
+                          toast(app, L.s("Allow \"All files access\" for OpenLauncher in Highlights first.", "Izinkan \"Akses semua file\" untuk OpenLauncher di Highlights dulu."))
+                          return@Thread
+                      }
+                      val dir = dir(DIR_SHOT)
+                      if (dir == null) {
+                          toast(app, L.s("Could not create the gamecapture folder.", "Folder gamecapture tidak bisa dibuat."))
+                          return@Thread
+                      }
+                      val f = File(dir, "OpenLauncher_" + stamp() + ".png")
+                      var ok = false
+                      if (AccessMgr.viaShizuku(app) && Shz.granted()) {
+                          ok = grabPng(f) { Shz.spawn(arrayOf("screencap", "-p")) }
+                      } else if (AccessMgr.info.rootGranted) {
+                          ok = grabPng(f) { ProcessBuilder("su", "-c", "screencap -p").start() }
+                      }
+                      if (ok) {
+                          scan(app, f.absolutePath)
+                          toast(app, L.s("Screenshot saved: ", "Screenshot disimpan: ") + f.name)
+                          return@Thread
+                      }
+                      val s = HlService.instance
+                      if (s != null && s.hasProjection()) {
+                          s.shotProj(f)
+                      } else {
+                          toast(app, L.s("Screenshot needs root or Shizuku, or a capture session started in Highlights.", "Screenshot butuh root atau Shizuku, atau sesi capture yang dimulai di Highlights."))
+                      }
+                  }.start()
+              }
+
+              /** Menangkap PNG dari stdout proses privileged (su atau Shizuku) dan menulisnya sendiri sebagai app. */
+              private fun grabPng(f: File, spawn: () -> Process?): Boolean {
+                  var p: Process? = null
+                  var guard: Thread? = null
+                  return try {
+                      val pr = spawn()
+                      if (pr == null) {
+                          false
+                      } else {
+                          p = pr
+                          val g = Thread {
+                              try {
+                                  Thread.sleep(10000)
+                                  pr.destroy()
+                              } catch (e: Exception) {
+                              }
+                          }
+                          g.isDaemon = true
+                          g.start()
+                          guard = g
+                          val bytes = pr.inputStream.use { it.readBytes() }
+                          if (bytes.size < 16 || bytes[0] != 0x89.toByte() || bytes[1] != 0x50.toByte() || bytes[2] != 0x4E.toByte() || bytes[3] != 0x47.toByte()) {
+                              false
+                          } else {
+                              f.writeBytes(bytes)
+                              true
+                          }
+                      }
+                  } catch (e: Exception) {
+                      false
+                  } finally {
+                      try { guard?.interrupt() } catch (e: Exception) {}
+                      try { p?.destroy() } catch (e: Exception) {}
+                  }
+              }
+
+              /** Dipanggil dari hotkey engine: mulai atau hentikan rekaman. */
+              fun toggleRecording(c: Context) {
+                  val s = HlService.instance
+                  if (s == null || !s.hasProjection()) {
+                      toast(c, L.s("Start a capture session in Highlights first.", "Mulai sesi capture di Highlights dulu."))
+                  } else {
+                      s.toggleRec()
+                  }
+              }
+          }
+          OLEOF
+          mkdir -p 'app/src/main/java/com/midosxq/oplx'
+          cat > 'app/src/main/java/com/midosxq/oplx/HlService.kt' <<'OLEOF'
+          package com.midosxq.oplx
+
+          import android.app.Activity
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.app.Service
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.content.pm.ServiceInfo
+          import android.graphics.Bitmap
+          import android.graphics.PixelFormat
+          import android.hardware.display.DisplayManager
+          import android.hardware.display.VirtualDisplay
+          import android.media.ImageReader
+          import android.media.MediaRecorder
+          import android.media.projection.MediaProjection
+          import android.media.projection.MediaProjectionManager
+          import android.os.Build
+          import android.os.Handler
+          import android.os.HandlerThread
+          import android.os.IBinder
+          import android.os.Looper
+          import android.os.SystemClock
+          import android.util.Log
+          import android.view.Surface
+          import java.io.File
+          import java.io.FileOutputStream
+
+          /**
+           * Sesi capture Highlights. Dimulai dari halaman Highlights setelah pengguna menyetujui izin tangkap layar Android.
+           * Satu MediaProjection dan satu VirtualDisplay dipakai bergantian untuk rekaman video dan screenshot
+           * (Android 14+ tidak mengizinkan membuat VirtualDisplay kedua dari izin yang sama).
+           */
+          class HlService : Service() {
+              companion object {
+                  private const val TAG = "OL/Highlights"
+                  private const val CH = "highlights"
+                  private const val NID = 2
+                  @Volatile var instance: HlService? = null
+                  @Volatile var recording = false
+                  @Volatile var recStart = 0L
+                  @Volatile var onChange: (() -> Unit)? = null
+
+                  fun startSession(c: Context, code: Int, data: Intent) {
+                      val i = Intent(c, HlService::class.java)
+                      i.putExtra("code", code)
+                      i.putExtra("data", data)
+                      c.startForegroundService(i)
+                  }
+
+                  fun stopSession(c: Context) {
+                      c.stopService(Intent(c, HlService::class.java))
+                  }
+
+                  fun sessionActive(): Boolean = instance?.hasProjection() == true
+              }
+
+              private val main = Handler(Looper.getMainLooper())
+              private var thread: HandlerThread? = null
+              private var worker: Handler? = null
+              private var proj: MediaProjection? = null
+              private var vd: VirtualDisplay? = null
+              private var rec: MediaRecorder? = null
+              private var recFile: File? = null
+              private var micOk = false
+
+              private val projCb = object : MediaProjection.Callback() {
+                  override fun onStop() {
+                      Log.i(TAG, "projection stopped by system")
+                      main.post { stopSelf() }
+                  }
+              }
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              fun hasProjection(): Boolean = proj != null
+
+              private fun notifyChange() {
+                  val cb = onChange
+                  if (cb != null) main.post { cb() }
+              }
+
+              private fun toast(s: String) { Hl.toast(this, s) }
+
+              private fun notif(text: String): Notification {
+                  val stopPi = PendingIntent.getService(this, 2, Intent(this, HlService::class.java).setAction("stop"), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+                  return Notification.Builder(this, CH)
+                      .setContentTitle("OpenLauncher Highlights")
+                      .setContentText(text)
+                      .setSmallIcon(android.R.drawable.ic_media_play)
+                      .addAction(Notification.Action.Builder(android.graphics.drawable.Icon.createWithResource(this, android.R.drawable.ic_delete), L.s("End session", "Akhiri sesi"), stopPi).build())
+                      .build()
+              }
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  if (intent?.action == "stop") {
+                      stopSelf()
+                      return START_NOT_STICKY
+                  }
+                  val code = intent?.getIntExtra("code", 0) ?: 0
+                  @Suppress("DEPRECATION")
+                  val data = intent?.getParcelableExtra<Intent>("data")
+                  val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                  nm.createNotificationChannel(NotificationChannel(CH, "Highlights", NotificationManager.IMPORTANCE_LOW))
+                  micOk = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                  var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                  if (micOk) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                  try {
+                      startForeground(NID, notif(L.s("Capture session ready", "Sesi capture siap")), type)
+                  } catch (e: Exception) {
+                      Log.e(TAG, "startForeground failed: " + e.message)
+                      toast(L.s("Highlights could not start: ", "Highlights tidak bisa dimulai: ") + e.message)
+                      stopSelf()
+                      return START_NOT_STICKY
+                  }
+                  if (data == null || code != Activity.RESULT_OK) {
+                      stopSelf()
+                      return START_NOT_STICKY
+                  }
+                  try {
+                      releaseAll()
+                      val mgr = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                      val p = mgr.getMediaProjection(code, data)
+                      if (thread == null) {
+                          val t = HandlerThread("ol-highlights")
+                          t.start()
+                          thread = t
+                          worker = Handler(t.looper)
+                      }
+                      p.registerCallback(projCb, main)
+                      proj = p
+                      instance = this
+                      Log.i(TAG, "session started, mic=" + micOk)
+                  } catch (e: Exception) {
+                      Log.e(TAG, "projection failed: " + e.message)
+                      toast(L.s("Screen capture could not start: ", "Tangkap layar tidak bisa dimulai: ") + e.message)
+                      stopSelf()
+                      return START_NOT_STICKY
+                  }
+                  notifyChange()
+                  return START_NOT_STICKY
+              }
+
+              private fun densityDpi(): Int = resources.displayMetrics.densityDpi
+
+              private fun attach(p: MediaProjection, w: Int, h: Int, s: Surface) {
+                  val d = vd
+                  if (d == null) {
+                      vd = p.createVirtualDisplay("OpenLauncherHL", w, h, densityDpi(), DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, s, null, worker)
+                  } else {
+                      d.resize(w, h, densityDpi())
+                      d.setSurface(s)
+                  }
+              }
+
+              fun toggleRec() {
+                  if (recording) stopRec() else startRec()
+              }
+
+              fun startRec() {
+                  val p = proj
+                  if (p == null) {
+                      toast(L.s("Start a capture session in Highlights first.", "Mulai sesi capture di Highlights dulu."))
+                      return
+                  }
+                  if (recording) return
+                  if (!Hl.storageOk()) {
+                      toast(L.s("Allow \"All files access\" for OpenLauncher in Highlights first.", "Izinkan \"Akses semua file\" untuk OpenLauncher di Highlights dulu."))
+                      return
+                  }
+                  val dir = Hl.dir(Hl.DIR_VIDEO)
+                  if (dir == null) {
+                      toast(L.s("Could not create the highlight folder.", "Folder highlight tidak bisa dibuat."))
+                      return
+                  }
+                  val f = File(dir, "OpenLauncher_" + Hl.stamp() + ".mp4")
+                  val sz = Hl.size(this)
+                  val mic = Hl.mic(this) && micOk
+                  var r: MediaRecorder? = null
+                  try {
+                      val mr = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(this) else MediaRecorder()
+                      r = mr
+                      if (mic) mr.setAudioSource(MediaRecorder.AudioSource.MIC)
+                      mr.setVideoSource(MediaRecorder.VideoSource.SURFACE)
+                      mr.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                      mr.setOutputFile(f.absolutePath)
+                      mr.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+                      if (mic) {
+                          mr.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                          mr.setAudioEncodingBitRate(128000)
+                          mr.setAudioSamplingRate(44100)
+                      }
+                      mr.setVideoSize(sz.first, sz.second)
+                      mr.setVideoFrameRate(Hl.fps(this))
+                      mr.setVideoEncodingBitRate(Hl.mbps(this) * 1000000)
+                      mr.prepare()
+                      attach(p, sz.first, sz.second, mr.surface)
+                      mr.start()
+                      rec = mr
+                      recFile = f
+                      recStart = SystemClock.elapsedRealtime()
+                      recording = true
+                      (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(NID, notif(L.s("Recording...", "Merekam...")))
+                      toast(L.s("Recording started", "Rekaman dimulai"))
+                      Log.i(TAG, "recording " + sz.first + "x" + sz.second + " mic=" + mic + " -> " + f.name)
+                  } catch (e: Exception) {
+                      Log.e(TAG, "recording failed: " + e.message)
+                      try { vd?.setSurface(null) } catch (x: Exception) {}
+                      try { r?.reset() } catch (x: Exception) {}
+                      try { r?.release() } catch (x: Exception) {}
+                      try { f.delete() } catch (x: Exception) {}
+                      toast(L.s("Recording failed: ", "Rekaman gagal: ") + e.message)
+                  }
+                  notifyChange()
+              }
+
+              fun stopRec() {
+                  if (!recording) return
+                  recording = false
+                  val r = rec
+                  val f = recFile
+                  rec = null
+                  recFile = null
+                  try { vd?.setSurface(null) } catch (e: Exception) {}
+                  var ok = true
+                  try { r?.stop() } catch (e: Exception) { ok = false }
+                  try { r?.reset() } catch (e: Exception) {}
+                  try { r?.release() } catch (e: Exception) {}
+                  if (f != null) {
+                      if (ok && f.exists() && f.length() > 0) {
+                          Hl.scan(this, f.absolutePath)
+                          toast(L.s("Recording saved: ", "Rekaman disimpan: ") + f.name)
+                      } else {
+                          try { f.delete() } catch (e: Exception) {}
+                          toast(L.s("The recording was too short and was discarded.", "Rekaman terlalu singkat dan dibuang."))
+                      }
+                  }
+                  (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(NID, notif(L.s("Capture session ready", "Sesi capture siap")))
+                  notifyChange()
+              }
+
+              /** Screenshot lewat sesi capture. Tidak tersedia saat merekam karena VirtualDisplay hanya satu. */
+              fun shotProj(f: File) {
+                  val p = proj
+                  val w = worker
+                  if (p == null || w == null) {
+                      toast(L.s("No capture session.", "Tidak ada sesi capture."))
+                      return
+                  }
+                  if (recording) {
+                      toast(L.s("Screenshot through the session is not available while recording. Use root, or stop recording first.", "Screenshot lewat sesi tidak tersedia saat merekam. Pakai root, atau hentikan rekaman dulu."))
+                      return
+                  }
+                  w.post {
+                      val sz = Hl.size(this)
+                      val reader = ImageReader.newInstance(sz.first, sz.second, PixelFormat.RGBA_8888, 2)
+                      var done = false
+                      fun finish(ok: Boolean) {
+                          if (done) return
+                          done = true
+                          try { vd?.setSurface(null) } catch (e: Exception) {}
+                          try { reader.close() } catch (e: Exception) {}
+                          if (ok) {
+                              Hl.scan(this, f.absolutePath)
+                              toast(L.s("Screenshot saved: ", "Screenshot disimpan: ") + f.name)
+                          } else {
+                              try { f.delete() } catch (e: Exception) {}
+                              toast(L.s("Screenshot failed.", "Screenshot gagal."))
+                          }
+                      }
+                      reader.setOnImageAvailableListener({ rd ->
+                          if (!done) {
+                              var ok = false
+                              try {
+                                  val img = rd.acquireLatestImage()
+                                  if (img != null) {
+                                      val pl = img.planes[0]
+                                      val rowW = pl.rowStride / pl.pixelStride
+                                      val raw = Bitmap.createBitmap(rowW, sz.second, Bitmap.Config.ARGB_8888)
+                                      raw.copyPixelsFromBuffer(pl.buffer)
+                                      img.close()
+                                      val bmp = if (rowW != sz.first) Bitmap.createBitmap(raw, 0, 0, sz.first, sz.second) else raw
+                                      FileOutputStream(f).use { out -> bmp.compress(Bitmap.CompressFormat.PNG, 100, out) }
+                                      ok = true
+                                  }
+                              } catch (e: Exception) {
+                                  Log.e(TAG, "screenshot failed: " + e.message)
+                              }
+                              if (ok) finish(true)
+                          }
+                      }, w)
+                      try {
+                          attach(p, sz.first, sz.second, reader.surface)
+                      } catch (e: Exception) {
+                          Log.e(TAG, "screenshot attach failed: " + e.message)
+                          finish(false)
+                          return@post
+                      }
+                      w.postDelayed({ finish(false) }, 3000)
+                  }
+              }
+
+              private fun releaseAll() {
+                  if (recording) stopRec()
+                  try { vd?.release() } catch (e: Exception) {}
+                  vd = null
+                  try { proj?.unregisterCallback(projCb) } catch (e: Exception) {}
+                  try { proj?.stop() } catch (e: Exception) {}
+                  proj = null
+              }
+
+              override fun onDestroy() {
+                  Log.i(TAG, "session end")
+                  releaseAll()
+                  try { thread?.quitSafely() } catch (e: Exception) {}
+                  thread = null
+                  worker = null
+                  recording = false
+                  instance = null
+                  notifyChange()
+                  super.onDestroy()
+              }
+          }
+          OLEOF
+          mkdir -p 'app/src/main/java/com/midosxq/oplx'
+          cat > 'app/src/main/java/com/midosxq/oplx/Shz.kt' <<'OLEOF'
+          package com.midosxq.oplx
+
+          import android.content.Context
+          import android.content.pm.PackageManager
+          import android.util.Log
+          import rikka.shizuku.Shizuku
+
+          /**
+           * Jalur non-root lewat Shizuku (satu-satunya jalur non-root yang didukung). Shizuku memberi shell dengan uid 2000 (adb)
+           * atau uid 0 (bila Shizuku sendiri dijalankan dengan root). Verifikasi dilakukan dengan menjalankan "id" lewat Shizuku.
+           * Belum diuji di perangkat: kemampuan mapper lewat jalur ini bergantung pada izin dan SELinux perangkat.
+           */
+          object Shz {
+              private const val TAG = "OL/Shizuku"
+              private const val PKG = "moe.shizuku.privileged.api"
+              private const val REQ = 61
+
+              /** uid hasil verifikasi terakhir (2000 = adb shell, 0 = root). -1 bila belum atau tidak terverifikasi. */
+              @Volatile var uid: Int = -1
+              @Volatile private var permCb: ((Boolean) -> Unit)? = null
+              private var listening = false
+
+              fun installed(c: Context): Boolean = try {
+                  c.packageManager.getPackageInfo(PKG, 0)
+                  true
+              } catch (e: Exception) {
+                  false
+              }
+
+              /** Layanan Shizuku berjalan dan binder sudah diterima app ini. */
+              fun running(): Boolean = try {
+                  Shizuku.pingBinder()
+              } catch (e: Throwable) {
+                  false
+              }
+
+              fun granted(): Boolean = try {
+                  running() && !Shizuku.isPreV11() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+              } catch (e: Throwable) {
+                  false
+              }
+
+              /** Dipasang sekali dari MainActivity: perubahan status Shizuku memperbarui UI lewat AccessMgr.onChange. */
+              fun listen() {
+                  if (listening) return
+                  listening = true
+                  try {
+                      Shizuku.addBinderReceivedListenerSticky { AccessMgr.onChange?.invoke() }
+                      Shizuku.addBinderDeadListener { AccessMgr.onChange?.invoke() }
+                      Shizuku.addRequestPermissionResultListener { _, result ->
+                          val cb = permCb
+                          permCb = null
+                          if (cb != null) cb(result == PackageManager.PERMISSION_GRANTED)
+                      }
+                  } catch (e: Throwable) {
+                      Log.e(TAG, "listener setup failed: " + e.message)
+                  }
+              }
+
+              /** Meminta izin Shizuku. Callback menerima true bila izin sudah ada atau diberikan. */
+              fun request(cb: (Boolean) -> Unit) {
+                  if (!running()) {
+                      cb(false)
+                      return
+                  }
+                  if (granted()) {
+                      cb(true)
+                      return
+                  }
+                  permCb = cb
+                  try {
+                      Shizuku.requestPermission(REQ)
+                  } catch (e: Throwable) {
+                      Log.e(TAG, "requestPermission failed: " + e.message)
+                      permCb = null
+                      cb(false)
+                  }
+              }
+
+              /** Shizuku.newProcess bersifat privat di API 13, jadi dipanggil lewat refleksi. */
+              fun spawn(cmd: Array<String>): Process? {
+                  return try {
+                      val m = Shizuku::class.java.getDeclaredMethod("newProcess", Array<String>::class.java, Array<String>::class.java, String::class.java)
+                      m.isAccessible = true
+                      m.invoke(null, cmd, null, null) as? Process
+                  } catch (e: Throwable) {
+                      Log.e(TAG, "newProcess failed: " + e.message)
+                      null
+                  }
+              }
+
+              fun shell(): Process? = spawn(arrayOf("sh"))
+
+              /** Menjalankan "id" lewat Shizuku dan menyimpan uid-nya. Mengembalikan uid, atau -1 bila gagal. */
+              fun verify(): Int {
+                  uid = -1
+                  if (!granted()) return -1
+                  val p = spawn(arrayOf("sh", "-c", "id")) ?: return -1
+                  val out = try {
+                      p.inputStream.bufferedReader().readText()
+                  } catch (e: Exception) {
+                      ""
+                  } finally {
+                      try { p.destroy() } catch (x: Exception) {}
+                  }
+                  val m = Regex("uid=(\\d+)").find(out)
+                  val u = if (m == null) -1 else (m.groupValues[1].toIntOrNull() ?: -1)
+                  uid = if (u == 0 || u == 2000) u else -1
+                  Log.i(TAG, "verify uid=" + u)
+                  return uid
+              }
+
+              /** Menunggu binder Shizuku diterima setelah app baru dibuka (datang beberapa saat setelah proses mulai). */
+              fun waitRunning(maxMs: Long) {
+                  var t = 0L
+                  while (t < maxMs && !running()) {
+                      try { Thread.sleep(200) } catch (e: Exception) { return }
+                      t += 200
+                  }
+              }
+          }
           OLEOF
 
       - name: Prepare assets (source.zip, branding.zip)
