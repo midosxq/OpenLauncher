@@ -98,7 +98,7 @@ jobs:
                               val l = i.readLine() ?: break
                               if (l.startsWith(mark)) break
                               sb.append(l).append('\n')
-                          } else if (!p.isAlive) {
+                          } else if (!alive(p)) {
                               lastError = "su exited (access denied?)"
                               Log.w("OL/Root", "su process ended")
                               close()
@@ -114,9 +114,18 @@ jobs:
                       }
                       sb.toString()
                   } catch (e: Exception) {
+                      lastError = e.javaClass.simpleName + ": " + (e.message ?: "")
+                      Log.e("OL/Root", "run failed: " + lastError)
                       close()
                       ""
                   }
+              }
+
+              /** ShizukuRemoteProcess.isAlive bisa melempar exception selain IllegalThreadStateException; anggap masih hidup bila gagal dicek. */
+              private fun alive(p: Process): Boolean = try {
+                  p.isAlive
+              } catch (e: Exception) {
+                  true
               }
 
               @Synchronized
@@ -3157,7 +3166,8 @@ jobs:
                   val idOut = shell.run("id")
                   val idOk = if (viaShz) (idOut.contains("uid=0") || idOut.contains("uid=2000")) else idOut.contains("uid=0")
                   if (!idOk) {
-                      val why = if (shell.lastError.isNotEmpty()) " (" + shell.lastError + ")" else ""
+                      val snip = idOut.trim().take(60)
+                      val why = (if (shell.lastError.isNotEmpty()) " (" + shell.lastError + ")" else "") + (if (snip.isNotEmpty()) " [" + snip + "]" else "")
                       Log.e(TAG, "access check failed" + why)
                       if (viaShz) {
                           setState(2, L.s("Shizuku access is not available. Start Shizuku and activate it first.", "Akses Shizuku tidak tersedia. Jalankan Shizuku dan aktifkan dulu.") + why)
@@ -5879,6 +5889,7 @@ jobs:
           import android.app.AlertDialog
           import android.content.Context
           import android.content.Intent
+          import android.content.res.ColorStateList
           import android.content.pm.PackageManager
           import android.media.MediaScannerConnection
           import android.media.projection.MediaProjectionManager
@@ -5893,6 +5904,7 @@ jobs:
           import android.widget.FrameLayout
           import android.widget.LinearLayout
           import android.widget.ScrollView
+          import android.widget.SeekBar
           import android.widget.TextView
           import android.widget.Toast
           import java.io.File
@@ -6041,6 +6053,33 @@ jobs:
                   c.addView(row, ui.lp(WRAP, WRAP, 6))
               }
 
+              private fun preview() {
+                  Hud.show(act, L.s("Screenshot saved", "Screenshot disimpan"), "OpenLauncher_test.png")
+              }
+
+              private fun slider(max: Int, progress: Int, text: (Int) -> String, onChange: (Int) -> Unit, onDone: () -> Unit): LinearLayout {
+                  val c = LinearLayout(act)
+                  c.orientation = LinearLayout.VERTICAL
+                  val l = ui.tv("", 13f, Pal.MUTED)
+                  c.addView(l)
+                  val sb = SeekBar(act)
+                  sb.max = max
+                  sb.progress = progress
+                  sb.progressTintList = ColorStateList.valueOf(Pal.PURPLE)
+                  sb.thumbTintList = ColorStateList.valueOf(Pal.PURPLE_LIGHT)
+                  sb.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                      override fun onProgressChanged(s: SeekBar?, v: Int, fromUser: Boolean) {
+                          l.text = text(v)
+                          if (fromUser) onChange(v)
+                      }
+                      override fun onStartTrackingTouch(s: SeekBar?) {}
+                      override fun onStopTrackingTouch(s: SeekBar?) { onDone() }
+                  })
+                  c.addView(sb, LinearLayout.LayoutParams(MATCH, WRAP))
+                  l.text = text(progress)
+                  return c
+              }
+
               private fun settingsCard(col: LinearLayout) {
                   val c = ui.card()
                   c.addView(ui.tv(L.s("Recorder settings", "Pengaturan perekam"), 15f, Pal.PURPLE_LIGHT, true))
@@ -6073,6 +6112,24 @@ jobs:
                       c.addView(ui.line(L.s("If the microphone was just allowed, end the session and start it again to use it.", "Jika mikrofon baru diizinkan, akhiri sesi lalu mulai lagi agar dipakai."), Pal.MUTED, 11f, 6))
                   }
                   c.addView(ui.line(L.s("Game audio is not recorded in this version.", "Audio game belum direkam di versi ini."), Pal.MUTED, 11f, 10))
+                  c.addView(ui.tv(L.s("Notification position", "Posisi notifikasi"), 14f, Pal.PURPLE_LIGHT, true), ui.lp(WRAP, WRAP, 18))
+                  choice(
+                      c, L.s("Slides in from", "Meluncur dari"),
+                      listOf("l" to L.s("Left", "Kiri"), "r" to L.s("Right", "Kanan")),
+                      Hl.side(act)
+                  ) { Hl.setSide(act, it); preview() }
+                  c.addView(ui.line(L.s("Height", "Ketinggian"), Pal.TEXT, 13f, 14))
+                  c.addView(
+                      slider(100, Hl.posY(act), { v -> L.s("From top: ", "Dari atas: ") + v + "%" }, { v -> Hl.setPosY(act, v) }, { preview() }),
+                      ui.lp(MATCH, WRAP, 4)
+                  )
+                  if (!Settings.canDrawOverlays(act)) {
+                      c.addView(ui.line(L.s("In-game notifications need the \"Display over other apps\" permission. Until then a plain toast is used.", "Notifikasi di dalam game butuh izin \"Tampil di atas app lain\". Sebelum itu dipakai toast biasa."), Pal.AMBER, 12f, 10))
+                      c.addView(ui.pill(L.s("Grant overlay permission", "Beri izin overlay"), true) {
+                          try { act.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + act.packageName))) } catch (e: Exception) {}
+                      }, ui.lp(WRAP, WRAP, 8))
+                  }
+                  c.addView(ui.pill(L.s("Test notification", "Tes notifikasi"), false) { preview() }, ui.lp(WRAP, WRAP, 10))
                   col.addView(c, ui.lp(MATCH, WRAP, 14))
               }
 
@@ -6222,10 +6279,7 @@ jobs:
           import android.graphics.Point
           import android.media.MediaScannerConnection
           import android.os.Environment
-          import android.os.Handler
-          import android.os.Looper
           import android.view.WindowManager
-          import android.widget.Toast
           import java.io.File
           import java.text.SimpleDateFormat
           import java.util.Date
@@ -6248,6 +6302,12 @@ jobs:
               fun setFps(c: Context, v: Int) { sp(c).edit().putInt("fps", v).apply() }
               fun mbps(c: Context): Int = sp(c).getInt("mbps", 8)
               fun setMbps(c: Context, v: Int) { sp(c).edit().putInt("mbps", v).apply() }
+              /** Sisi tempat notifikasi overlay meluncur masuk: "l" (kiri) atau "r" (kanan). */
+              fun side(c: Context): String = sp(c).getString("hud_side", "r") ?: "r"
+              fun setSide(c: Context, v: String) { sp(c).edit().putString("hud_side", v).apply() }
+              /** Ketinggian notifikasi overlay: 0 = paling atas, 100 = paling bawah (persen dari tinggi layar). */
+              fun posY(c: Context): Int = sp(c).getInt("hud_y", 8)
+              fun setPosY(c: Context, v: Int) { sp(c).edit().putInt("hud_y", v.coerceIn(0, 100)).apply() }
               fun mic(c: Context): Boolean = sp(c).getBoolean("mic", false)
               fun setMic(c: Context, v: Boolean) { sp(c).edit().putBoolean("mic", v).apply() }
 
@@ -6265,9 +6325,9 @@ jobs:
 
               fun stamp(): String = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
 
+              /** Pesan singkat sebagai kartu overlay ala ShadowPlay (Toast bila izin overlay belum ada). */
               fun toast(c: Context, s: String) {
-                  val app = c.applicationContext
-                  Handler(Looper.getMainLooper()).post { Toast.makeText(app, s, Toast.LENGTH_SHORT).show() }
+                  Hud.show(c, "OpenLauncher", s)
               }
 
               fun scan(c: Context, path: String) {
@@ -6338,7 +6398,7 @@ jobs:
                       }
                       if (ok) {
                           scan(app, f.absolutePath)
-                          toast(app, L.s("Screenshot saved: ", "Screenshot disimpan: ") + f.name)
+                          Hud.show(app, L.s("Screenshot saved", "Screenshot disimpan"), f.name)
                           return@Thread
                       }
                       val s = HlService.instance
@@ -6605,7 +6665,7 @@ jobs:
                       recStart = SystemClock.elapsedRealtime()
                       recording = true
                       (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(NID, notif(L.s("Recording...", "Merekam...")))
-                      toast(L.s("Recording started", "Rekaman dimulai"))
+                      Hud.show(this, L.s("Recording started", "Rekaman dimulai"), "")
                       Log.i(TAG, "recording " + sz.first + "x" + sz.second + " mic=" + mic + " -> " + f.name)
                   } catch (e: Exception) {
                       Log.e(TAG, "recording failed: " + e.message)
@@ -6633,7 +6693,7 @@ jobs:
                   if (f != null) {
                       if (ok && f.exists() && f.length() > 0) {
                           Hl.scan(this, f.absolutePath)
-                          toast(L.s("Recording saved: ", "Rekaman disimpan: ") + f.name)
+                          Hud.show(this, L.s("Recording saved", "Rekaman disimpan"), f.name)
                       } else {
                           try { f.delete() } catch (e: Exception) {}
                           toast(L.s("The recording was too short and was discarded.", "Rekaman terlalu singkat dan dibuang."))
@@ -6666,7 +6726,7 @@ jobs:
                           try { reader.close() } catch (e: Exception) {}
                           if (ok) {
                               Hl.scan(this, f.absolutePath)
-                              toast(L.s("Screenshot saved: ", "Screenshot disimpan: ") + f.name)
+                              Hud.show(this, L.s("Screenshot saved", "Screenshot disimpan"), f.name)
                           } else {
                               try { f.delete() } catch (e: Exception) {}
                               toast(L.s("Screenshot failed.", "Screenshot gagal."))
@@ -6723,6 +6783,146 @@ jobs:
                   instance = null
                   notifyChange()
                   super.onDestroy()
+              }
+          }
+          OLEOF
+          mkdir -p 'app/src/main/java/com/midosxq/oplx'
+          cat > 'app/src/main/java/com/midosxq/oplx/Hud.kt' <<'OLEOF'
+          package com.midosxq.oplx
+
+          import android.content.Context
+          import android.graphics.PixelFormat
+          import android.graphics.drawable.GradientDrawable
+          import android.os.Handler
+          import android.os.Looper
+          import android.provider.Settings
+          import android.text.TextUtils
+          import android.view.Gravity
+          import android.view.View
+          import android.view.WindowManager
+          import android.widget.ImageView
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import android.widget.Toast
+
+          /**
+           * Notifikasi overlay kecil bergaya ShadowPlay: kartu gelap dengan ikon app, muncul di salah satu sudut layar
+           * di atas game, lalu hilang sendiri. Tidak menerima sentuhan dan tidak mengambil fokus, jadi tidak mengganggu game.
+           * Bila izin overlay belum diberikan, memakai Toast biasa.
+           */
+          object Hud {
+              private val main = Handler(Looper.getMainLooper())
+              private var cur: View? = null
+              private var curWm: WindowManager? = null
+              private var hideRun: Runnable? = null
+
+              fun show(c: Context, title: String, text: String) {
+                  val app = c.applicationContext
+                  main.post { showNow(app, title, text) }
+              }
+
+              private fun dp(c: Context, v: Int): Int = (v * c.resources.displayMetrics.density).toInt()
+
+              private fun fallback(c: Context, title: String, text: String) {
+                  Toast.makeText(c, if (text.isEmpty()) title else title + ": " + text, Toast.LENGTH_SHORT).show()
+              }
+
+              private fun showNow(c: Context, title: String, text: String) {
+                  if (!Settings.canDrawOverlays(c)) {
+                      fallback(c, title, text)
+                      return
+                  }
+                  remove()
+                  try {
+                      val wm = c.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                      val card = LinearLayout(c)
+                      card.orientation = LinearLayout.HORIZONTAL
+                      card.gravity = Gravity.CENTER_VERTICAL
+                      val bg = GradientDrawable()
+                      bg.setColor(0xF2101014.toInt())
+                      bg.cornerRadius = dp(c, 10).toFloat()
+                      bg.setStroke(dp(c, 1), Pal.PURPLE_LIGHT)
+                      card.background = bg
+                      card.setPadding(dp(c, 12), dp(c, 10), dp(c, 18), dp(c, 10))
+
+                      val icon = ImageView(c)
+                      try {
+                          icon.setImageDrawable(c.packageManager.getApplicationIcon(c.packageName))
+                      } catch (e: Exception) {
+                      }
+                      card.addView(icon, LinearLayout.LayoutParams(dp(c, 30), dp(c, 30)))
+
+                      val col = LinearLayout(c)
+                      col.orientation = LinearLayout.VERTICAL
+                      val t1 = TextView(c)
+                      t1.text = title
+                      t1.setTextColor(Pal.TEXT)
+                      t1.textSize = 13f
+                      t1.setTypeface(t1.typeface, android.graphics.Typeface.BOLD)
+                      t1.maxLines = 1
+                      t1.ellipsize = TextUtils.TruncateAt.END
+                      col.addView(t1)
+                      if (text.isNotEmpty()) {
+                          val t2 = TextView(c)
+                          t2.text = text
+                          t2.setTextColor(Pal.MUTED)
+                          t2.textSize = 11f
+                          t2.maxLines = 1
+                          t2.ellipsize = TextUtils.TruncateAt.END
+                          col.addView(t2)
+                      }
+                      val cl = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                      cl.leftMargin = dp(c, 10)
+                      card.addView(col, cl)
+
+                      val lp = WindowManager.LayoutParams(
+                          WindowManager.LayoutParams.WRAP_CONTENT,
+                          WindowManager.LayoutParams.WRAP_CONTENT,
+                          WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                          PixelFormat.TRANSLUCENT
+                      )
+                      val atEnd = Hl.side(c) != "l"
+                      lp.gravity = Gravity.TOP or (if (atEnd) Gravity.END else Gravity.START)
+                      lp.x = dp(c, 20)
+                      // Ketinggian: persen dari ruang yang tersisa, supaya kartu tidak keluar layar.
+                      card.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+                      val screenH = wm.currentWindowMetrics.bounds.height()
+                      val maxY = maxOf(0, screenH - card.measuredHeight - dp(c, 20))
+                      lp.y = (maxY * Hl.posY(c) / 100f).toInt()
+                      card.alpha = 0f
+                      card.translationX = (if (atEnd) 40 else -40) * c.resources.displayMetrics.density
+                      wm.addView(card, lp)
+                      card.animate().alpha(1f).translationX(0f).setDuration(220).start()
+                      cur = card
+                      curWm = wm
+                      val r = Runnable { fadeOut(card) }
+                      hideRun = r
+                      main.postDelayed(r, 3200)
+                  } catch (e: Exception) {
+                      cur = null
+                      curWm = null
+                      fallback(c, title, text)
+                  }
+              }
+
+              private fun fadeOut(v: View) {
+                  if (cur !== v) return
+                  v.animate().alpha(0f).setDuration(250).withEndAction { if (cur === v) remove() }.start()
+              }
+
+              private fun remove() {
+                  val r = hideRun
+                  if (r != null) main.removeCallbacks(r)
+                  hideRun = null
+                  val v = cur
+                  val w = curWm
+                  cur = null
+                  curWm = null
+                  if (v != null && w != null) {
+                      try { v.animate().cancel() } catch (e: Exception) {}
+                      try { w.removeView(v) } catch (e: Exception) {}
+                  }
               }
           }
           OLEOF
